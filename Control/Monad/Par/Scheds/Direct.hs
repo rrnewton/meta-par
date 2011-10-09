@@ -1,5 +1,6 @@
 {-# LANGUAGE RankNTypes, NamedFieldPuns, BangPatterns,
-             ExistentialQuantification, CPP, ScopedTypeVariables
+             ExistentialQuantification, CPP, ScopedTypeVariables,
+             GeneralizedNewtypeDeriving
 	     #-}
 {-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
 
@@ -63,7 +64,11 @@ dbg = True
 -- Note that the result type for continuations is unit.  Forked
 -- computations return nothing.
 --
-type Par a = C.ContT () ROnly a
+
+newtype ParT m a = ParT { runParT :: C.ContT () (R.ReaderT Sched m) a }
+    deriving (Monad, MonadCont, MonadIO, R.MonadReader Sched)
+
+type Par = ParT IO
 type ROnly = R.ReaderT Sched IO
 
 data Sched = Sched 
@@ -297,7 +302,7 @@ runPar userComp = unsafePerformIO $ do
 				      put_ (IVar rref) res
 
 		  
-		  R.runReaderT (C.runContT userComp' trivialCont) state
+		  R.runReaderT (C.runContT (runParT userComp') trivialCont) state
 
                   when dbg$ putStrLn " *** Completely out of users computation.  Writing final value."
                   readIORef rref >>= putMVar m
@@ -416,7 +421,7 @@ fork task = do
    
 -- This routine "longjmp"s to the scheduler, throwing out its own continuation.
 reschedule :: Par a 
-reschedule = C.ContT rescheduleR
+reschedule = ParT $ C.ContT rescheduleR
 
 -- Reschedule ignores its continuation:
 rescheduleR :: ignoredCont -> ROnly ()
@@ -429,7 +434,7 @@ rescheduleR k = do
     Just task -> do
        -- When popping work from our own queue the Sched (Reader value) stays the same:
        when dbg $ liftIO$ printf "  popped work from own queue (cpu %d)\n" (no mysched)
-       let C.ContT fn = task 
+       let ParT (C.ContT fn) = task 
        -- Run the stolen task with a continuation that returns to the scheduler if the task exits normally:
        fn (\ () -> do 
            sch <- R.ask
@@ -490,7 +495,7 @@ steal mysched@Sched{ idle, scheds, rng, no=my_no } = do
            Just task  -> do
               when dbg$ printf "cpu %d got work from cpu %d\n" my_no (no schd)
 	      runReaderWith mysched $ 
-		C.runContT task
+		C.runContT (runParT task)
 		 (\_ -> do
 		   when dbg$ liftIO$ printf "cpu %d DONE running stolen work from %d\n" my_no (no schd)
 		   return ())
