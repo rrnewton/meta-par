@@ -93,6 +93,7 @@ Library
                  , Control.Monad.Par.RNG
                  , Control.Monad.Par.AList
                  , Control.Monad.Par.Internal
+--                 , Control.Monad.Par.DistTrace
 
   Build-depends: base >= 4 && < 5,
                  deepseq >= 1.1 && < 1.2,
@@ -106,6 +107,7 @@ Library
                , mtl >= 2.0.1.0
                , vector
                , containers
+               , remote
   ghc-options: -O2
   Other-modules:
                  Control.Monad.Par.Stream
