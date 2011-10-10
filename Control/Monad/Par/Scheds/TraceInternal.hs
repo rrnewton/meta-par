@@ -1,5 +1,5 @@
 {-# LANGUAGE RankNTypes, NamedFieldPuns, BangPatterns,
-             ExistentialQuantification, CPP
+             ExistentialQuantification, CPP, ScopedTypeVariables
 	     #-}
 {-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
 
@@ -28,6 +28,39 @@ import Control.DeepSeq
 import Control.Applicative
 -- import Text.Printf
 
+import Remote
+import Control.Monad.IO.Class
+
+-- ---------------------------------------------------------------------------
+
+newHotVar :: MonadIO m => a -> m (HotVar a)
+modifyHotVar :: MonadIO m => HotVar a -> (a -> (a, b)) -> m b
+writeHotVar :: MonadIO m => HotVar a -> a -> m ()
+readHotVar :: MonadIO m => HotVar a -> m a
+{-# INLINE newHotVar #-}
+{-# INLINE modifyHotVar #-}
+{-# INLINE writeHotVar #-}
+{-# INLINE readHotVar #-}
+
+-- | Using STM HotVars from RRN's Direct.hs for now
+type HotVar a = TVar a
+newHotVar = liftIO . newTVarIO
+modifyHotVar  tv fn = liftIO $ atomically (do x <- readTVar tv 
+				              let (x2,b) = fn x
+				              writeTVar tv x2
+				              return b)
+modifyHotVar_ tv fn = liftIO $ atomically (do x <- readTVar tv 
+                                              writeTVar tv (fn x))
+readHotVar x = liftIO . atomically $ readTVar x
+writeHotVar v x = liftIO . atomically $ writeTVar v x
+
+instance Show (TVar a) where 
+  show ref = "<tvar>"
+
+hotVarTransaction = atomically
+readHotVarRaw  = readTVar
+writeHotVarRaw = writeTVar
+
 -- ---------------------------------------------------------------------------
 
 data Trace = forall a . Get (IVar a) (a -> Trace)
@@ -38,25 +71,25 @@ data Trace = forall a . Get (IVar a) (a -> Trace)
            | Yield Trace
 
 -- | The main scheduler loop.
-sched :: Bool -> Sched -> Trace -> IO ()
+sched :: MonadIO m => Bool -> Sched -> Trace -> m ()
 sched _doSync queue t = loop t
  where 
   loop t = case t of
     New a f -> do
-      r <- newIORef a
+      r <- newHotVar a
       loop (f (IVar r))
     Get (IVar v) c -> do
-      e <- readIORef v
+      e <- readHotVar v
       case e of
          Full a -> loop (c a)
          _other -> do
-           r <- atomicModifyIORef v $ \e -> case e of
+           r <- modifyHotVar v $ \e -> case e of
                         Empty    -> (Blocked [c], reschedule queue)
                         Full a   -> (Full a,      loop (c a))
                         Blocked cs -> (Blocked (c:cs), reschedule queue)
            r
     Put (IVar v) a t  -> do
-      cs <- atomicModifyIORef v $ \e -> case e of
+      cs <- modifyHotVar v $ \e -> case e of
                Empty    -> (Full a, [])
                Full _   -> error "multiple put"
                Blocked cs -> (Full a, cs)
@@ -70,8 +103,8 @@ sched _doSync queue t = loop t
 	 then reschedule queue
 -- We could fork an extra thread here to keep numCapabilities workers
 -- even when the main thread returns to the runPar caller...
-         else do putStrLn " [par] Forking replacement thread..\n"
-                 forkIO (reschedule queue); return ()
+         else do liftIO $ putStrLn " [par] Forking replacement thread..\n"
+                 liftIO $ forkIO (reschedule queue); return ()
 -- But even if we don't we are not orphaning any work in this
 -- threads work-queue because it can be stolen by other threads.
 --	 else return ()
@@ -81,14 +114,14 @@ sched _doSync queue t = loop t
         let Sched { workpool } = queue
         -- TODO: Perhaps consider Data.Seq here.
 	-- This would also be a chance to steal and work from opposite ends of the queue.
-        atomicModifyIORef workpool $ \ts -> (ts++[parent], ())
+        modifyHotVar workpool $ \ts -> (ts++[parent], ())
 	reschedule queue
 
 -- | Process the next item on the work queue or, failing that, go into
 --   work-stealing mode.
-reschedule :: Sched -> IO ()
+reschedule :: MonadIO m => Sched -> m ()
 reschedule queue@Sched{ workpool } = do
-  e <- atomicModifyIORef workpool $ \ts ->
+  e <- modifyHotVar workpool $ \ts ->
          case ts of
            []      -> ([], Nothing)
            (t:ts') -> (ts', Just t)
@@ -102,19 +135,19 @@ reschedule queue@Sched{ workpool } = do
 -- parallel) programs.
 
 -- | Attempt to steal work or, failing that, give up and go idle.
-steal :: Sched -> IO ()
+steal :: MonadIO m => Sched -> m ()
 steal q@Sched{ idle, scheds, no=my_no } = do
   -- printf "cpu %d stealing\n" my_no
   go scheds
   where
-    go [] = do m <- newEmptyMVar
-               r <- atomicModifyIORef idle $ \is -> (m:is, is)
+    go [] = do m <- liftIO newEmptyMVar
+               r <- modifyHotVar idle $ \is -> (m:is, is)
                if length r == numCapabilities - 1
                   then do
                      -- printf "cpu %d initiating shutdown\n" my_no
-                     mapM_ (\m -> putMVar m True) r
+                     mapM_ (\m -> liftIO $ putMVar m True) r
                   else do
-                    done <- takeMVar m
+                    done <- liftIO $ takeMVar m
                     if done
                        then do
                          -- printf "cpu %d shutting down\n" my_no
@@ -125,7 +158,7 @@ steal q@Sched{ idle, scheds, no=my_no } = do
     go (x:xs)
       | no x == my_no = go xs
       | otherwise     = do
-         r <- atomicModifyIORef (workpool x) $ \ ts ->
+         r <- modifyHotVar (workpool x) $ \ ts ->
                  case ts of
                     []     -> ([], Nothing)
                     (x:xs) -> (xs, Just x)
@@ -136,20 +169,20 @@ steal q@Sched{ idle, scheds, no=my_no } = do
            Nothing -> go xs
 
 -- | If any worker is idle, wake one up and give it work to do.
-pushWork :: Sched -> Trace -> IO ()
+pushWork :: MonadIO m => Sched -> Trace -> m ()
 pushWork Sched { workpool, idle } t = do
-  atomicModifyIORef workpool $ \ts -> (t:ts, ())
-  idles <- readIORef idle
+  modifyHotVar workpool $ \ts -> (t:ts, ())
+  idles <- readHotVar idle
   when (not (null idles)) $ do
-    r <- atomicModifyIORef idle (\is -> case is of
-                                          [] -> ([], return ())
-                                          (i:is) -> (is, putMVar i False))
+    r <- modifyHotVar idle (\is -> case is of
+                                     [] -> ([], return ())
+                                     (i:is) -> (is, liftIO $ putMVar i False))
     r -- wake one up
 
 data Sched = Sched
     { no       :: {-# UNPACK #-} !Int,
-      workpool :: IORef [Trace],
-      idle     :: IORef [MVar Bool],
+      workpool :: HotVar [Trace],
+      idle     :: HotVar [MVar Bool],
       scheds   :: [Sched] -- Global list of all per-thread workers.
     }
 --  deriving Show
@@ -169,7 +202,7 @@ instance Applicative Par where
    (<*>) = ap
    pure  = return
 
-newtype IVar a = IVar (IORef (IVarContents a))
+newtype IVar a = IVar (HotVar (IVarContents a))
 -- data IVar a = IVar (IORef (IVarContents a))
 
 -- Forcing evaluation of a IVar is fruitless.
@@ -178,9 +211,9 @@ instance NFData (IVar a) where
 
 
 -- From outside the Par computation we can peek.  But this is nondeterministic.
-pollIVar :: IVar a -> IO (Maybe a)
+pollIVar :: MonadIO m => IVar a -> m (Maybe a)
 pollIVar (IVar ref) = 
-  do contents <- readIORef ref
+  do contents <- readHotVar ref
      case contents of 
        Full x -> return (Just x)
        _      -> return (Nothing)
@@ -192,8 +225,8 @@ data IVarContents a = Full a | Empty | Blocked [a -> Trace]
 {-# INLINE runPar_internal #-}
 runPar_internal :: Bool -> Par a -> a
 runPar_internal _doSync x = unsafePerformIO $ do
-   workpools <- replicateM numCapabilities $ newIORef []
-   idle <- newIORef []
+   workpools <- replicateM numCapabilities $ newHotVar []
+   idle <- newHotVar []
    let states = [ Sched { no=x, workpool=wp, idle, scheds=states }
                 | (x,wp) <- zip [0..] workpools ]
 
@@ -218,14 +251,14 @@ runPar_internal _doSync x = unsafePerformIO $ do
 #endif
 
    m <- newEmptyMVar
-   forM_ (zip [0..] states) $ \(cpu,state) ->
+   forM_ (zip [0..] states) $ \(cpu,state) -> 
         forkOnIO cpu $
           if (cpu /= main_cpu)
              then reschedule state
              else do
-                  rref <- newIORef Empty
+                  rref <- newHotVar Empty :: IO (HotVar (IVarContents a))
                   sched _doSync state $ runCont (x >>= put_ (IVar rref)) (const Done)
-                  readIORef rref >>= putMVar m
+                  readHotVar rref >>= putMVar m
 
    r <- takeMVar m
    case r of
@@ -245,7 +278,7 @@ runParAsync = runPar_internal False
 -- | An alternative version in which the consumer of the result has
 -- | the option to "help" run the Par computation if results it is
 -- | interested in are not ready yet.
-runParAsyncHelper :: Par a -> (a, IO ())
+runParAsyncHelper :: MonadIO m => Par a -> (a, m ())
 runParAsyncHelper = undefined -- TODO: Finish Me.
 
 -- -----------------------------------------------------------------------------
@@ -290,3 +323,4 @@ put v a = deepseq a (Par $ \c -> Put v a (c ()))
 -- necessary in most cases).
 yield :: Par ()
 yield = Par $ \c -> Yield (c ())
+

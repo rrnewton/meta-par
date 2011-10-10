@@ -295,16 +295,11 @@ for_ start end fn = loop start
   loop !i | i == end  = return ()
 	  | otherwise = do fn i; loop (i+1)
 
-
-
-
 -- --------------------------------------------------------------------------------
 -- -- Standard instances:
 
-instance PC.ParGettable Par IVar where
+instance PC.MonadPar Par IVar where
   get = get
-
-instance PC.ParIVar Par IVar where 
   fork = fork 
   new  = new
   put  = put
