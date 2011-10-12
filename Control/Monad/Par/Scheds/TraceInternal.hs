@@ -223,8 +223,8 @@ data IVarContents a = Full a | Empty | Blocked [a -> Trace]
 
 
 {-# INLINE runPar_internal #-}
-runPar_internal :: Bool -> Par a -> a
-runPar_internal _doSync x = unsafePerformIO $ do
+runPar_internal :: MonadIO m => Bool -> Par a -> m a
+runPar_internal _doSync x = do
    workpools <- replicateM numCapabilities $ newHotVar []
    idle <- newHotVar []
    let states = [ Sched { no=x, workpool=wp, idle, scheds=states }
@@ -250,9 +250,9 @@ runPar_internal _doSync x = unsafePerformIO $ do
    let main_cpu = 0
 #endif
 
-   m <- newEmptyMVar
+   m <- liftIO newEmptyMVar
    forM_ (zip [0..] states) $ \(cpu,state) -> 
-        forkOnIO cpu $
+        liftIO . forkOnIO cpu $
           if (cpu /= main_cpu)
              then reschedule state
              else do
@@ -260,20 +260,20 @@ runPar_internal _doSync x = unsafePerformIO $ do
                   sched _doSync state $ runCont (x >>= put_ (IVar rref)) (const Done)
                   readHotVar rref >>= putMVar m
 
-   r <- takeMVar m
+   r <- liftIO $ takeMVar m
    case r of
      Full a -> return a
      _ -> error "no result"
 
 
 runPar :: Par a -> a
-runPar = runPar_internal True
+runPar = unsafePerformIO . runPar_internal True
 
 -- | An asynchronous version in which the main thread of control in a
 -- Par computation can return while forked computations still run in
 -- the background.  
 runParAsync :: Par a -> a
-runParAsync = runPar_internal False
+runParAsync = unsafePerformIO . runPar_internal False
 
 -- | An alternative version in which the consumer of the result has
 -- | the option to "help" run the Par computation if results it is
