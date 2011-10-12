@@ -1,5 +1,6 @@
 {-# LANGUAGE RankNTypes, NamedFieldPuns, BangPatterns,
-             ExistentialQuantification, CPP, ScopedTypeVariables
+             ExistentialQuantification, CPP, ScopedTypeVariables,
+             DeriveDataTypeable
 	     #-}
 {-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
 
@@ -15,12 +16,14 @@ module Control.Monad.Par.Scheds.TraceInternal (
    runPar, runParAsync, runParAsyncHelper,
    new, newFull, newFull_, get, put_, put,
    pollIVar, yield,
+   runParDist
  ) where
 
 
 import Control.Monad as M hiding (mapM, sequence, join)
 import Prelude hiding (mapM, sequence, head,tail)
 import Data.IORef
+import Data.Typeable
 import System.IO.Unsafe
 import Control.Concurrent hiding (yield)
 import GHC.Conc hiding (yield)
@@ -187,9 +190,9 @@ data Sched = Sched
     }
 --  deriving Show
 
-newtype Par a = Par {
-    runCont :: (a -> Trace) -> Trace
-}
+newtype Par a = Par { runCont :: (a -> Trace) -> Trace }
+    deriving (Typeable)
+
 
 instance Functor Par where
     fmap f m = Par $ \c -> runCont m (c . f)

@@ -2,6 +2,8 @@
      FlexibleInstances, UndecidableInstances
   #-}
 
+#define DIST_MONAD_PAR
+
 {-|
 
     This module establishes a class hierarchy that captures the
