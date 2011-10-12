@@ -281,6 +281,9 @@ runParAsync = unsafePerformIO . runPar_internal False
 runParAsyncHelper :: MonadIO m => Par a -> (a, m ())
 runParAsyncHelper = undefined -- TODO: Finish Me.
 
+runParDist :: Par a -> ProcessM a
+runParDist = runPar_internal True
+
 -- -----------------------------------------------------------------------------
 
 -- | creates a new @IVar@

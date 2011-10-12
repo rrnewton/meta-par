@@ -2,8 +2,8 @@ include common.mk
 
 # 9 benchmarks
 BENCHMARKS= queens.hs mandel.hs blackscholes.hs nbody.hs \
-            parfib_monad.hs parfib_pseq.hs \
-            primes.hs cholesky.hs coins.hs
+            parfib_monad.hs parfib_pseq.hs parfib_dist.hs \
+            primes.hs cholesky.hs coins.hs 
 
 # binomial_lattice.hs
 EXES= $(BENCHMARKS:.hs=.exe)
@@ -71,6 +71,8 @@ deps:
 	cabal install parallel
 	cabal install fft
 	cabal install carray
+#       cabal install remote
+	@echo '*** Make sure to install CloudHaskell (remote is not yet on Hackage)'
 
 clean:
 	rm -f $(ALLEXES) *.o *.hi *.out *.exe
