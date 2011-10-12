@@ -3,15 +3,15 @@
              PackageImports, ScopedTypeVariables, MultiParamTypeClasses
 	     #-}
 
--- This provides an alternative to Control.Monad.Par which
--- deterministic parallel random number generation as an additional capability.
+-- | This module provides adds deterministic parallel random number
+--   generation as an additional capability for a 'Control.Monad.Par.Class.ParIVar' monad.
 
 module Control.Monad.Par.RNG
   ( 
      rand, 
      Par, runParRNG, fork,
      IVar, new, newFull, newFull_, get, put, put_,
-     pval, spawn, spawn_
+     spawn, spawn_
   )
 where
 
@@ -33,6 +33,8 @@ import System.IO.Unsafe (unsafePerformIO)
 --------------------------------------------------------------------------------
 -- Type Definitions
 
+-- TODO: Generalize over Par monads.
+
 -- The idea here is to simple route the state of the RNG through the
 -- control flow in the Par monad, splitting the RNG where fork is
 -- called.
@@ -47,12 +49,15 @@ instance Monad Par where
   (PRNG sm) >>= f =  PRNG (sm >>= unPRNG . f)
   return x = PRNG (return x)
 
--- instance PC.ParFuture Par IVar where 
---   get  = get
--- #include "par_instance_boilerplate.hs"
+-- <boilerplate>
+spawn p  = do r <- new;  fork (p >>= put r);   return r
+spawn_ p = do r <- new;  fork (p >>= put_ r);  return r
+-- </boilerplate>>
 
-instance PC.ParGettable Par IVar where 
-  get  = get
+instance PC.ParFuture Par IVar where 
+  get    = get
+  spawn  = spawn
+  spawn_ = spawn_
 
 instance PC.ParIVar Par P.IVar where 
   fork = fork 
@@ -82,7 +87,7 @@ fork (PRNG sm) = PRNG$
      S.put g1
      return ()
 
--- | `rand` is the only new method added by ParRNG over Par.
+-- | `rand` is the only new method added by ParRNG over `Control.Monad.Par.Class.ParIvar`.
 -- 
 --    It produce a randomized value and advances the RNG on the current
 --    thread of the parallel computation.  
@@ -116,15 +121,5 @@ put_ v x   = PRNG$ S.lift$ P.put_ v x
 
 --------------------------------------------------------------------------------
 -- TEMP: These should be subsumed by the default definitions in the ParIVar Class:
-pval :: NFData a => a -> Par (IVar a)
-pval a = spawn (return a)
-
-spawn :: NFData a => Par a -> Par (IVar a)
-spawn p = do r <- new
-	     fork (p >>= put r)
-	     return r
-
-spawn_ :: Par a -> Par (IVar a)
-spawn_ p = do r <- new
-	      fork (p >>= put_ r)
-	      return r
+-- pval :: NFData a => a -> Par (IVar a)
+-- pval a = spawn (return a)
