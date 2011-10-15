@@ -13,7 +13,7 @@ module Control.Monad.Par.Scheds.TraceInternal (
    Trace(..), Sched(..), Par(..),
    IVar(..), IVarContents(..),
    sched,
-   runPar, runParAsync, runParAsyncHelper,
+   runPar, runParDist, runParAsync, runParAsyncHelper,
    new, newFull, newFull_, get, put_, put,
    pollIVar, yield,
    runParDist
@@ -33,6 +33,7 @@ import Control.Applicative
 
 import Remote
 import Control.Monad.IO.Class
+import Data.Binary (Binary ())
 
 -- ---------------------------------------------------------------------------
 
@@ -70,11 +71,14 @@ data Trace = forall a . Get (IVar a) (a -> Trace)
            | forall a . Put (IVar a) a Trace
            | forall a . New (IVarContents a) (IVar a -> Trace)
            | Fork Trace Trace
+           -- | Temporary trace for blocking longSpawn
+           | forall a . (Binary a, Typeable a) => 
+               LongSpawn (Closure (IO a)) (IVar a -> Trace)
            | Done
            | Yield Trace
 
 -- | The main scheduler loop.
-sched :: MonadIO m => Bool -> Sched -> Trace -> m ()
+sched :: Bool -> Sched -> Trace -> ProcessM ()
 sched _doSync queue t = loop t
  where 
   loop t = case t of
@@ -101,13 +105,22 @@ sched _doSync queue t = loop t
     Fork child parent -> do
          pushWork queue child
          loop parent
+    LongSpawn clos k -> do
+         peers <- getPeers
+         mypid <- getSelfPid
+         let workers = findPeerByRole peers "WORKER"
+         case workers of
+           [] -> error "couldn't find any workers"
+           (w:_) -> do v <- callRemoteIO w clos
+                       r <- newHotVar (Full v)
+                       loop (k (IVar r))
     Done ->
          if _doSync
 	 then reschedule queue
 -- We could fork an extra thread here to keep numCapabilities workers
 -- even when the main thread returns to the runPar caller...
          else do liftIO $ putStrLn " [par] Forking replacement thread..\n"
-                 liftIO $ forkIO (reschedule queue); return ()
+                 spawnLocal (reschedule queue); return ()
 -- But even if we don't we are not orphaning any work in this
 -- threads work-queue because it can be stolen by other threads.
 --	 else return ()
@@ -122,7 +135,7 @@ sched _doSync queue t = loop t
 
 -- | Process the next item on the work queue or, failing that, go into
 --   work-stealing mode.
-reschedule :: MonadIO m => Sched -> m ()
+reschedule :: Sched -> ProcessM ()
 reschedule queue@Sched{ workpool } = do
   e <- modifyHotVar workpool $ \ts ->
          case ts of
@@ -138,7 +151,7 @@ reschedule queue@Sched{ workpool } = do
 -- parallel) programs.
 
 -- | Attempt to steal work or, failing that, give up and go idle.
-steal :: MonadIO m => Sched -> m ()
+steal :: Sched -> ProcessM ()
 steal q@Sched{ idle, scheds, no=my_no } = do
   -- printf "cpu %d stealing\n" my_no
   go scheds
@@ -224,9 +237,11 @@ pollIVar (IVar ref) =
 
 data IVarContents a = Full a | Empty | Blocked [a -> Trace]
 
+runParProcessM :: Par a -> ProcessM a
+runParProcessM = runPar_internal True
 
 {-# INLINE runPar_internal #-}
-runPar_internal :: MonadIO m => Bool -> Par a -> m a
+runPar_internal :: Bool -> Par a -> ProcessM a
 runPar_internal _doSync x = do
    workpools <- replicateM numCapabilities $ newHotVar []
    idle <- newHotVar []
@@ -248,6 +263,7 @@ runPar_internal _doSync x = do
     -- Lacking threadCapability, we always pick CPU #0 to run the main
     -- thread.  If the current thread is not running on CPU #0, this
     -- will require some data to be shipped over the memory bus, and
+
     -- hence will be slightly slower than the version above.
     --
    let main_cpu = 0
@@ -255,13 +271,14 @@ runPar_internal _doSync x = do
 
    m <- liftIO newEmptyMVar
    forM_ (zip [0..] states) $ \(cpu,state) -> 
-        liftIO . forkOnIO cpu $
+--        liftIO . forkOnIO cpu $
+        spawnLocal $
           if (cpu /= main_cpu)
              then reschedule state
              else do
-                  rref <- newHotVar Empty :: IO (HotVar (IVarContents a))
+                  rref <- liftIO $ (newHotVar Empty :: IO (HotVar (IVarContents a)))
                   sched _doSync state $ runCont (x >>= put_ (IVar rref)) (const Done)
-                  readHotVar rref >>= putMVar m
+                  readHotVar rref >>= liftIO . putMVar m
 
    r <- liftIO $ takeMVar m
    case r of
@@ -270,13 +287,13 @@ runPar_internal _doSync x = do
 
 
 runPar :: Par a -> a
-runPar = unsafePerformIO . runPar_internal True
+runPar = undefined -- unsafePerformIO . runPar_internal True
 
 -- | An asynchronous version in which the main thread of control in a
 -- Par computation can return while forked computations still run in
 -- the background.  
 runParAsync :: Par a -> a
-runParAsync = unsafePerformIO . runPar_internal False
+runParAsync = undefined -- unsafePerformIO . runPar_internal False
 
 -- | An alternative version in which the consumer of the result has
 -- | the option to "help" run the Par computation if results it is

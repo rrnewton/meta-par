@@ -9,9 +9,13 @@ import Control.Monad.IO.Class
 import GHC.Conc
 
 import Remote
-
+import Remote.Call (mkClosure)
+import Remote.Encoding
+import Remote.Closure
+import Remote.Reg
 type FibType = Int64
 
+{-
 parfib1 :: FibType -> Par FibType
 parfib1 n | n < 2 = return 1 
 parfib1 n = 
@@ -20,6 +24,85 @@ parfib1 n =
      y  <-             parfib1 (n-2)  
      x  <- get xf
      return (x+y)
+-}
+
+{-
+    parfib2__0__impl :: Payload -> ProcessM FibType
+    parfib2__0__impl a
+      = do { res <- liftIO (Remote.Encoding.serialDecode a);
+             case res of {
+               Prelude.Just a1 -> liftIO (parfib2 a1)
+               _ -> error "Bad decoding in closure splice of parfib2" } }
+    parfib2__0__implPl :: Payload -> ProcessM Payload
+    parfib2__0__implPl a
+      = do { res <- parfib2__0__impl a;
+             liftIO (Remote.Encoding.serialEncode res) }
+    parfib2__closure :: FibType -> Closure (IO FibType)
+    parfib2__closure
+      = \ a1
+          -> Remote.Closure.Closure
+               "Main.parfib2__0__impl" (Remote.Encoding.serialEncodePure a1)
+    __remoteCallMetaData :: RemoteCallMetaData
+    __remoteCallMetaData x
+      = Remote.Reg.putReg
+          parfib1__0__impl
+          "Main.parfib1__0__impl"
+          (Remote.Reg.putReg
+             parfib1__0__implPl
+             "Main.parfib1__0__implPl"
+             (Remote.Reg.putReg
+                parfib1__closure
+                "Main.parfib1__closure"
+                (Remote.Reg.putReg
+                   parfib2__0__impl
+                   "Main.parfib2__0__impl"
+                   (Remote.Reg.putReg
+                      parfib2__0__implPl
+                      "Main.parfib2__0__implPl"
+                      (Remote.Reg.putReg parfib2__closure "Main.parfib2__closure" x)))))
+-}
+
+
+parfib2__0__impl :: Payload -> ProcessM FibType
+parfib2__0__impl a
+    = do { res <- liftIO (Remote.Encoding.serialDecode a);
+           case res of 
+             Prelude.Just a1 -> liftIO $ runParIO (parfib2 a1)
+             _ -> error "Bad decoding in closure splice of parfib2" }
+parfib2__0__implPl :: Payload -> ProcessM Payload
+parfib2__0__implPl a
+    = do { res <- parfib2__0__impl a;
+           liftIO (Remote.Encoding.serialEncode res) }
+parfib2__closure :: FibType -> Closure (IO FibType)
+parfib2__closure
+    = \ a1
+    -> Remote.Closure.Closure
+       "Main.parfib2__0__impl" (Remote.Encoding.serialEncodePure a1)
+__remoteCallMetaData :: RemoteCallMetaData
+__remoteCallMetaData x
+    = Remote.Reg.putReg
+      parfib2__0__impl
+      "Main.parfib2__0__impl"
+      (Remote.Reg.putReg
+             parfib2__0__implPl
+             "Main.parfib2__0__implPl"
+             (Remote.Reg.putReg parfib2__closure "Main.parfib2__closure" x))
+
+parfib3 :: FibType -> IO FibType
+parfib3 = runParIO . parfib2
+
+--parfib2 :: FibType -> IO FibType
+parfib2 :: FibType -> Par FibType
+parfib2 n | n < 2 = return 1 
+parfib2 n = 
+  do 
+--     xf <- longSpawn $(mkParClosure 'parfib2 ) (n-1)
+     xf <- longSpawn $ parfib2__closure (n-1) 
+     y  <-             parfib2 (n-2)  
+     x  <- get xf
+     return (x+y)
+
+--     ; mapM_ (\ (offset,nid) -> spawn nid (worker__closure (interval-1) offset mypid)) numberedworkers
 
 --------------------------------------------------------------------------------
 -- And the wall is hit here: how can we make a value of type Par an
@@ -37,9 +120,6 @@ parfib1 n =
 -- 'Binary' instance.
 --------------------------------------------------------------------------------
 
-
-$( remotable ['parfib1] )
-
 main = do args <- getArgs	  
           let (version,size) = 
                   case args of 
@@ -47,7 +127,7 @@ main = do args <- getArgs
 		    [v,n] -> (v      ,read n)
           remoteInit (Just "config") [Main.__remoteCallMetaData] (initialProcess size)
        
-initialProcess size _ = liftIO . print =<< runParDist (parfib1 size) 
+initialProcess size _ = liftIO . print =<< runParDist (parfib2 size) 
 
 {- [2011.03] On 4-core nehalem, 3.33ghz:
 

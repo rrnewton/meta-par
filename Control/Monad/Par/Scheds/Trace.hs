@@ -11,7 +11,7 @@
  -}
 
 module Control.Monad.Par.Scheds.Trace (
-    Par, runPar, fork,
+    Par, runPar, runParDist, fork,
     IVar, new, newFull, newFull_, get, put, put_,
     spawn, spawn_,
     runParDist
@@ -53,3 +53,6 @@ instance PC.ParIVar Par IVar where
   newFull  = newFull
   newFull_ = newFull_
 --  yield = yield
+
+instance PC.ParDist Par IVar where
+  longSpawn c = Par $ LongSpawn c

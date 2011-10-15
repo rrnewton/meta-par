@@ -31,6 +31,9 @@ module Control.Monad.Par.Class
 where
 
 import Control.DeepSeq
+import Remote (Closure)
+import Data.Binary (Binary ())
+import Data.Typeable
 
 --------------------------------------------------------------------------------
 
@@ -134,9 +137,13 @@ class ParChan m snd rcv | m -> snd, m -> rcv where
 class Monad m => ParDist m var | m -> var where
 -- TODO: ADD SERIALIZABILITY CONSTRAINTS!  Change to "Closure":
   -- Serializable a => Closure (m a) -> m (ivar a)
-  longSpawn :: NFData a => m a -> m (var a)
+--  longSpawn :: NFData a => m a -> m (var a)
+
+  longSpawn :: (Binary a, Typeable a, NFData a) => Closure (IO a) -> m (var a)
+
+--  longSpawn :: (NFData a, NFData b) => (a -> IO b) -> b -> m (var a)
    -- Closure (m ()) -> m ()
-  longFork  :: m () -> m ()
+--  longFork  :: m () -> m ()
   -- longFork is only useful with an additional distributed IVar or Chan facility.
 
 -- TODO: Possible move to a different package to factor dependencies.
