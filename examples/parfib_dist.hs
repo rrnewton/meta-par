@@ -13,6 +13,9 @@ import Remote.Call (mkClosure)
 import Remote.Encoding
 import Remote.Closure
 import Remote.Reg
+
+import qualified Debug.Trace as DT
+
 type FibType = Int64
 
 {-
@@ -67,7 +70,7 @@ parfib2__0__impl :: Payload -> ProcessM FibType
 parfib2__0__impl a
     = do { res <- liftIO (Remote.Encoding.serialDecode a);
            case res of 
-             Prelude.Just a1 -> liftIO $ runParIO (parfib2 a1)
+             Prelude.Just a1 -> runParDist (parfib2 a1)
              _ -> error "Bad decoding in closure splice of parfib2" }
 parfib2__0__implPl :: Payload -> ProcessM Payload
 parfib2__0__implPl a
@@ -88,8 +91,8 @@ __remoteCallMetaData x
              "Main.parfib2__0__implPl"
              (Remote.Reg.putReg parfib2__closure "Main.parfib2__closure" x))
 
-parfib3 :: FibType -> IO FibType
-parfib3 = runParIO . parfib2
+parfib3 :: FibType -> ProcessM FibType
+parfib3 = runParDist . parfib2
 
 --parfib2 :: FibType -> IO FibType
 parfib2 :: FibType -> Par FibType
@@ -100,7 +103,7 @@ parfib2 n =
      xf <- longSpawn $ parfib2__closure (n-1) 
      y  <-             parfib2 (n-2)  
      x  <- get xf
-     return (x+y)
+     return $ DT.trace ("Returned " ++ show (x+y)) (x+y)
 
 --     ; mapM_ (\ (offset,nid) -> spawn nid (worker__closure (interval-1) offset mypid)) numberedworkers
 
@@ -121,13 +124,15 @@ parfib2 n =
 --------------------------------------------------------------------------------
 
 main = do args <- getArgs	  
+          print args
           let (version,size) = 
                   case args of 
   		    []    -> ("trace",10)
-		    [v,n] -> (v      ,read n)
+		    (v:n:_) -> (v      ,read n)
           remoteInit (Just "config") [Main.__remoteCallMetaData] (initialProcess size)
        
-initialProcess size _ = liftIO . print =<< runParDist (parfib2 size) 
+initialProcess size "MASTER" = liftIO . print =<< runParDist (parfib2 size) 
+initialProcess size "WORKER" = receiveWait []
 
 {- [2011.03] On 4-core nehalem, 3.33ghz:
 
