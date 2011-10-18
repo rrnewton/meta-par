@@ -257,7 +257,7 @@ runPar_internal _doSync x = do
     -- Note: GHC 7.1.20110301 is required for this to work, because that
     -- is when threadCapability was added.
     --
-   (main_cpu, _) <- threadCapability =<< myThreadId
+   (main_cpu, _) <- liftIO (threadCapability =<< myThreadId)
 #else
     --
     -- Lacking threadCapability, we always pick CPU #0 to run the main

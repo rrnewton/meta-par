@@ -1,5 +1,5 @@
 Name:                monad-par
-Version:             0.2
+Version:             0.3
 Synopsis:            A library for parallel programming based on a monad
 
 -- Version history:
@@ -7,8 +7,8 @@ Synopsis:            A library for parallel programming based on a monad
 --  0.1.0.1  : 
 --  0.1.0.2  : 
 --  0.1.1.0  : module reorganization, moving ParClass
-
 --  0.2      : Bumped for new class-based API
+--  0.3      : Bumped for new distributed API (and new, optional dependencies)
 
 
 Description:         This library offers an alternative parallel programming
