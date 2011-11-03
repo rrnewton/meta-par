@@ -93,11 +93,11 @@ data BenchRun = BenchRun
  } deriving (Eq, Show)
 
 data Sched 
-   = Trace | Direct | Sparks | ContFree
+   = Trace | Direct | Sparks | ContFree | DistDirect
    | None
  deriving (Eq, Show, Read, Ord)
 
-allScheds = S.fromList [Trace, Direct, Sparks, ContFree, None]
+allScheds = S.fromList [Trace, Direct, Sparks, ContFree, DistDirect, None]
 
 data Benchmark = Benchmark
  { name :: String
@@ -202,9 +202,10 @@ expandMode "Trace"    = [Trace]
 expandMode "Sparks"   = [Sparks]
 expandMode "Direct"   = [Direct]
 expandMode "ContFree" = [ContFree]
+expandMode "DistDirect" = [DistDirect]
 
 -- Omitting Direct until its bugs are fixed:
-ivarScheds = [Trace, ContFree, Direct] 
+ivarScheds = [Trace, ContFree, Direct, DistDirect] 
 
 schedToModule s = 
   case s of 
@@ -213,6 +214,7 @@ schedToModule s =
    Direct   -> "Control.Monad.Par.Scheds.Direct"
    ContFree -> "Control.Monad.Par.Scheds.ContFree"
    Sparks   -> "Control.Monad.Par.Scheds.Sparks"
+   DistDirect -> "Control.Monad.Par.Scheds.DistDirect"
    None     -> "qualified Control.Monad.Par as NotUsed"
   
 

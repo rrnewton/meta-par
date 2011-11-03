@@ -11,8 +11,11 @@ ifeq (,$(GHC_FLAGS))
 endif
 
 # This is hard to keep up to date:
-ALLPARSRC= ../Control/Monad/Par.hs ../Control/Monad/Par/AList.hs ../Control/Monad/Par/OpenList.hs \
-           ../Control/Monad/Par/IList.hs  ../Control/Monad/Par/Stream.hs ../Control/Monad/Par/Logging.hs
+ALLPARSRC= ../Control/Monad/Par.hs ../Control/Monad/Par/AList.hs	\
+           ../Control/Monad/Par/OpenList.hs				\
+           ../Control/Monad/Par/IList.hs				\
+           ../Control/Monad/Par/Stream.hs				\
+           ../Control/Monad/Par/Logging.hs
 
 # Par source code with relative paths updated for a deeper directory:
 DPRPARSRC= $(subst ../,../../,$(ALLPARSRC))
