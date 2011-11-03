@@ -23,6 +23,8 @@ module Control.Monad.Par.Scheds.DistDirect (
 import Control.Applicative
 import Control.Concurrent hiding (yield)
 import Data.IORef
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Vector as V
 import Data.Vector (Vector)
 import Text.Printf
@@ -66,10 +68,12 @@ newtype Par a = Par { unPar :: C.ContT () IO a }
 
 data Sched = Sched 
     { 
-      ---- Per worker ----
+      ---- Per capability ----
       no       :: {-# UNPACK #-} !Int,
+      tids     :: HotVar (Set ThreadId),
       workpool :: HotVar (Deque (Par ())),
-      rng      :: HotVar StdGen -- Random number gen for work stealing.
+      rng      :: HotVar StdGen, -- Random number gen for work stealing.
+      mortals  :: HotVar Int -- How many threads are mortal on this capability?
      }
     deriving (Show)
 
@@ -161,14 +165,24 @@ globals = unsafePerformIO $ do
   when dbg $ printf "Initializing global structures\n"
   n <- getNumCapabilities
   sem <- newQSem 0
+  _id <- myThreadId
   -- make a Vector of Schedulers, one for each capability
   v <- V.generateM n $ \i ->
-    Sched i <$> newHotVar emptydeque <*> (newStdGen >>= newHotVar)
+    Sched i <$> newIORef (Set.empty)
+            <*> newHotVar emptydeque 
+            <*> (newStdGen >>= newHotVar)
+            <*> newHotVar 0 -- no mortal threads at first
   -- pin a thread to each capability, and have it wait on the idle semaphore
-  V.forM_ v $ \(Sched {no}) -> forkOn no $ do
-    when dbg $ printf "[%d] Spawning thread on capability\n" no
-    workerLoop
+  forM_ [0..n] spawnWorker
   newIORef (sem, v)
+
+spawnWorker :: Int -> IO ThreadId
+spawnWorker cap = forkOn cap $ do
+  me <- myThreadId
+  (Sched { tids } ) <- mySched
+  modifyHotVar_ tids (Set.insert me)
+  when dbg $ printf "[%d] Spawning thread %s on capability\n" cap (show me)
+  workerLoop
 
 {-# INLINE idleSem #-}
 -- | Retrieve the global idle semaphore
@@ -199,6 +213,14 @@ mySched :: IO Sched
 mySched = do
   (i, _) <- threadCapability =<< myThreadId
   getSched i
+
+-- | Returns 'True' if the current thread is associated with a
+-- scheduler, or 'False' otherwise.
+isSchedThread :: IO Bool
+isSchedThread = do
+  me <- myThreadId
+  (cap, _) <- threadCapability me
+  Set.member me <$> (readHotVar =<< tids <$> mySched)
 
 --------------------------------------------------------------------------------
 -- Popping and pushing work
@@ -238,21 +260,27 @@ pushWork i task = do
 
 workerLoop :: IO ()
 workerLoop = do
-  (Sched { workpool, no }) <- mySched
-  -- first, wait until there is work to do
-  when dbg $ printf "[%d] Entering worker loop\n" no
-  waitQSem =<< idleSem
-  -- then, try taking work off own queue
-  mtask <- popWork
-  case mtask of
-    -- if own queue is empty, steal, then reenter workerLoop
-    Nothing -> steal >> workerLoop
-    -- otherwise, run popped work, then reenter workerLoop
-    Just task -> do
-      when dbg $ do sn <- makeStableName task
-                    printf " [%d] popped work %d from own queue\n" 
-                      no (hashStableName sn)
-      C.runContT (unPar task) $ \() -> do
+  (Sched { workpool, no, mortals }) <- mySched
+  die <- modifyHotVar mortals $ \ms ->
+           case ms of
+             0 -> (0, False)
+             n -> (n-1, True)
+  when (dbg && die) $ printf " [%d] Shutting down a thread\n" no
+  unless die $ do
+    -- first, wait until there is work to do
+    when dbg $ printf "[%d] Entering worker loop\n" no
+    waitQSem =<< idleSem
+    -- then, try taking work off own queue
+    mtask <- popWork
+    case mtask of
+      -- if own queue is empty, steal, then reenter workerLoop
+      Nothing -> steal >> workerLoop
+      -- otherwise, run popped work, then reenter workerLoop
+      Just task -> do
+        when dbg $ do sn <- makeStableName task
+                      printf " [%d] popped work %d from own queue\n" 
+                        no (hashStableName sn)
+        C.runContT (unPar task) $ \() -> do
         when dbg $ printf " [%d] finished work\n" no
         workerLoop
 
@@ -380,7 +408,7 @@ fork task = do
 -- than the thread created for this CPU by 'forkOn', but this
 -- [probably] shouldn't matter.
 runParIO userComp = do
-  (Sched { no }) <- mySched
+  (Sched { no, mortals }) <- mySched
   -- Make a new MVar to store the final answer of /this/ computation
   m <- newEmptyMVar
   -- Wrap the user computation in code to extract the final answer
@@ -395,7 +423,13 @@ runParIO userComp = do
         liftIO $ putMVar m ans
   -- Push work, which signals the idle semaphore so a worker will wake up
   pushWork no wrappedComp
+  -- If this is already a scheduler thread, we need to fork a replacement
+  isSched <- isSchedThread
+  when isSched (spawnWorker no >> return ())
   ans <- takeMVar m
+  -- Once we've gotten the answer, we need to increase the mortal count
+  -- on our capability, so that we stay near cap # of threads
+  when isSched $ modifyHotVar_ mortals (1+)
   when dbg $ do
     (Sched { no=final }) <- mySched
     printf " [%d] Finished user computation started by %d\n" final no
