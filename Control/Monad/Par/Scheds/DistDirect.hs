@@ -50,6 +50,7 @@ dbg = False
 #endif
 
 #define FORKPARENT
+-- #define IDLEWORKERS
 
 --------------------------------------------------------------------------------
 -- Core type definitions
@@ -251,7 +252,9 @@ pushWork i task = do
       when dbg $ do sn <- makeStableName task
                     printf " [%d] PUSH work unit %d\n" i (hashStableName sn)
       modifyHotVar_ workpool (addfront task)
+#ifdef IDLEWORKERS
       signalQSem =<< idleSem
+#endif
     _ -> do (me, _) <- threadCapability =<< myThreadId
             error $ printf " [%d] Tried to push onto nonexistend thread %d\n" me i
 
@@ -269,7 +272,11 @@ workerLoop = do
   unless die $ do
     -- first, wait until there is work to do
     when dbg $ printf "[%d] Entering worker loop\n" no
+#ifdef IDLEWORKERS
     waitQSem =<< idleSem
+#else
+--    yield
+#endif
     -- then, try taking work off own queue
     mtask <- popWork
     case mtask of
