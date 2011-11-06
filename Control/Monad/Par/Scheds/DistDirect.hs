@@ -1,8 +1,10 @@
-{-# LANGUAGE RankNTypes, NamedFieldPuns, BangPatterns,
-             ExistentialQuantification, CPP, ScopedTypeVariables,
-             TypeSynonymInstances, MultiParamTypeClasses,
-             GeneralizedNewtypeDeriving, PackageImports
-	     #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE PackageImports #-}
 {-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
 
 -- | A scheduler for the Par monad based on directly performing IO
@@ -17,7 +19,7 @@ module Control.Monad.Par.Scheds.DistDirect (
     runParDist, 
     new, get, put_, fork,
     newFull, newFull_, put,
-    spawn, spawn_, spawnP,
+    spawn, spawn_, spawnP, longSpawn
  ) where
 
 import Control.Applicative
@@ -25,6 +27,7 @@ import Control.Concurrent hiding (yield)
 import Data.IORef
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Typeable
 import qualified Data.Vector as V
 import Data.Vector (Vector)
 import Text.Printf
@@ -65,7 +68,7 @@ dbg = False
 -- computations return nothing.
 --
 newtype Par a = Par { unPar :: C.ContT () IO a }
-    deriving (Monad, MonadIO, MonadCont)
+    deriving (Monad, MonadIO, MonadCont, Typeable)
 
 data Sched = Sched 
     { 
@@ -139,8 +142,7 @@ readHotVar     :: HotVar a -> IO a
 {-# INLINE readHotVar    #-}
 {-# INLINE writeHotVar   #-}
 
--- TODO: strictify
-type HotVar a = IORef a
+type HotVar a      = IORef a
 newHotVar !a       = newIORef a
 modifyHotVar v fn  = atomicModifyIORef v $ \a ->
                        let (a', b) = fn a
@@ -447,6 +449,8 @@ runParIO userComp = do
 
 runParDist = undefined
 
+longSpawn = undefined
+
 {-# INLINE runPar #-}
 runPar = unsafePerformIO . runParIO
 
@@ -479,7 +483,6 @@ newFull :: (Show a, NFData a) => a -> Par (IVar a)
 newFull_ ::  Show a => a -> Par (IVar a)
 runPar   :: Show a => Par a -> a
 runParIO :: Show a => Par a -> IO a
-runParDist :: Show a => Par a -> ProcessM a
 #else
 spawn      :: NFData a => Par a -> Par (IVar a)
 spawn_     :: Par a -> Par (IVar a)
@@ -489,7 +492,10 @@ put        :: NFData a => IVar a -> a -> Par ()
 get        :: IVar a -> Par a
 runPar     :: Par a -> a
 runParIO   :: Par a -> IO a
-runParDist :: Par a -> ProcessM a 
+-- TODO: Figure out the type signature for this. Should it be a
+-- wrapper around CH's remoteInit? How much flexibility should we
+-- offer with args?
+-- runParDist :: Par a -> ProcessM a 
 newFull    :: NFData a => a -> Par (IVar a)
 newFull_   :: a -> Par (IVar a)
 
