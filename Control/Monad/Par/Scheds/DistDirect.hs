@@ -139,7 +139,7 @@ readHotVar     :: HotVar a -> IO a
 {-# INLINE readHotVar    #-}
 {-# INLINE writeHotVar   #-}
 
-
+-- TODO: strictify
 type HotVar a = IORef a
 newHotVar     = newIORef
 modifyHotVar  = atomicModifyIORef
@@ -264,6 +264,7 @@ pushWork i task = do
 workerLoop :: IO ()
 workerLoop = do
   (Sched { workpool, no, mortals }) <- mySched
+-- TODO: Maybe doesn't need to be atomic?
   die <- modifyHotVar mortals $ \ms ->
            case ms of
              0 -> (0, False)
