@@ -141,11 +141,13 @@ readHotVar     :: HotVar a -> IO a
 
 -- TODO: strictify
 type HotVar a = IORef a
-newHotVar     = newIORef
-modifyHotVar  = atomicModifyIORef
-modifyHotVar_ v fn = atomicModifyIORef v (\a -> (fn a, ()))
-readHotVar    = readIORef
-writeHotVar   = writeIORef
+newHotVar !a       = newIORef a
+modifyHotVar v fn  = atomicModifyIORef v $ \a ->
+                       let (a', b) = fn a
+                       in a' `seq` b `seq` (a', b)
+modifyHotVar_ v fn = modifyHotVar v (\a -> (fn a, ()))
+readHotVar         = readIORef
+writeHotVar v !a   = writeIORef v a
 instance Show (IORef a) where 
   show _ = "<ioref>"
 
