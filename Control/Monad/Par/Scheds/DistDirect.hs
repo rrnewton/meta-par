@@ -1,11 +1,21 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PackageImports #-}
-{-# OPTIONS_GHC -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE Rank2Types #-}
+
+{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
+{-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 -- | A scheduler for the Par monad based on directly performing IO
 -- actions when Par methods are called (i.e. without using a lazy
@@ -24,10 +34,17 @@ module Control.Monad.Par.Scheds.DistDirect (
 
 import Control.Applicative
 import Control.Concurrent hiding (yield)
+import qualified Data.Binary as B
+import Data.Data
+import Data.Dynamic
 import Data.IORef
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Typeable
+import Data.Typeable.Internal
+import GHC.Fingerprint.Type
+import Data.Unique
 import qualified Data.Vector as V
 import Data.Vector (Vector)
 import Text.Printf
@@ -39,13 +56,15 @@ import System.Mem.StableName
 import qualified Control.Monad.Par.Class as PC
 import Control.DeepSeq
 
-import Remote ( ProcessM )
+import Remote hiding (spawn)
+import Remote.Encoding
 
 --------------------------------------------------------------------------------
 -- Configuration Toggles 
 --------------------------------------------------------------------------------
 
--- #define DEBUG
+#define DEBUG
+dbg :: Bool
 #ifdef DEBUG
 dbg = True
 #else
@@ -82,6 +101,7 @@ data Sched = Sched
     deriving (Show)
 
 newtype IVar a = IVar (IORef (IVarContents a))
+                 deriving (Typeable)
 
 data IVarContents a = Full a | Empty | Blocked [a -> Par ()]
 
@@ -219,12 +239,12 @@ mySched = do
   (i, _) <- threadCapability =<< myThreadId
   getSched i
 
+{-# INLINE isSchedThread #-}
 -- | Returns 'True' if the current thread is associated with a
 -- scheduler, or 'False' otherwise.
 isSchedThread :: IO Bool
 isSchedThread = do
   me <- myThreadId
-  (cap, _) <- threadCapability me
   Set.member me <$> (readHotVar =<< tids <$> mySched)
 
 --------------------------------------------------------------------------------
@@ -239,7 +259,7 @@ popWork = do
   if dbg 
     then case mb of 
            Nothing -> return Nothing
-	   Just x  -> do 
+	   Just _  -> do 
              sn <- makeStableName mb
 	     printf " [%d] POP work unit %d\n" no (hashStableName sn)
 	     return mb
@@ -267,8 +287,9 @@ pushWork i task = do
 
 workerLoop :: IO ()
 workerLoop = do
-  (Sched { workpool, no, mortals }) <- mySched
--- TODO: Maybe doesn't need to be atomic?
+  (Sched { no, mortals }) <- mySched
+-- TODO: Maybe doesn't need to be atomic? Can non-pinned threads
+-- access the mortals variable? Probably in runParIO.
   die <- modifyHotVar mortals $ \ms ->
            case ms of
              0 -> (0, False)
@@ -384,7 +405,7 @@ put_ iv@(IVar v) !a = liftIO $ do
 #endif
   -- apply each waiting continuation to the value, then queue up the
   -- resulting Par computations
-  mapM_ (pushWork no . ($a)) cs        
+  mapM_ (pushWork no . ($ a)) cs        
 
 -- TODO: Ask about continuation stealing version
 {-# INLINE fork #-}
@@ -447,12 +468,119 @@ runParIO userComp = do
     printf " [%d] Finished user computation started by %d\n" final no
   return ans
 
-runParDist = undefined
-
-longSpawn = undefined
-
 {-# INLINE runPar #-}
 runPar = unsafePerformIO . runParIO
+
+--------------------------------------------------------------------------------
+-- Remote work queues and IVar maps
+
+-- | Machine-unique identifier for 'IVar's
+type IVarId = Int
+
+-- | 'LongWork' represents a unit of 'Par' work that /may/ be stolen
+-- by a remote worker. The 'ProcessId' specifies the receive daemon on
+-- the stealee, so that the stealer knows where to send the answer.
+data LongWork where 
+  LW :: IVarId -> Closure (ProcessM a) -> LongWork
+
+{-# NOINLINE longQueue #-}
+-- | One global queue for 'LongWork', stealable either remotely or
+-- locally
+longQueue :: HotVar (Deque LongWork)
+longQueue = unsafePerformIO $ newHotVar emptydeque
+
+-- | In order to keep a global map of 'IVar's ready to receive
+-- remotely-computed results, we have to wrap the differently-typed
+-- 'IVar's.
+data WrappedIVar where
+  WIVar :: (Typeable a) => IVar a -> WrappedIVar
+
+{-# NOINLINE waitingIVars #-}
+-- | A global 'IntMap' of 'WrappedIVar's, indexed by the unique
+-- identifier created when 'longSpawn' was invoked to create the
+-- 'IVar'.
+waitingIVars :: HotVar (IntMap WrappedIVar)
+waitingIVars = unsafePerformIO $ newHotVar IntMap.empty
+
+{-# INLINE longSpawn #-}
+longSpawn work = do
+  iv <- new
+  liftIO $ do ivarid <- hashUnique <$> newUnique
+              modifyHotVar_ longQueue (addfront (LW ivarid work))
+              modifyHotVar_ waitingIVars (IntMap.insert ivarid (WIVar iv))
+  return iv
+
+--------------------------------------------------------------------------------
+-- Remote message types
+
+data StealRequest = StealRequest ProcessId
+                    deriving (Typeable)
+
+instance B.Binary StealRequest where
+  get = StealRequest <$> B.get
+  put (StealRequest pid) = B.put pid
+
+data StealResponse a = StealResponse ProcessId IVarId (Closure (ProcessM a))
+                       deriving (Typeable)
+
+instance B.Binary a => B.Binary (StealResponse a) where
+  get = StealResponse <$> B.get <*> B.get <*> B.get
+  put (StealResponse pid iid c) = B.put c >> B.put iid >> B.put c
+
+data WorkFinished a where
+  WorkFinished :: Typeable a => IVarId -> a -> WorkFinished a
+                    deriving (Typeable)
+
+instance (B.Binary a, Typeable a) => B.Binary (WorkFinished a) where
+  get = WorkFinished <$> B.get <*> B.get
+  put (WorkFinished iid a) = B.put iid >> B.put a
+
+data PeerList = PeerList [ProcessId]
+                deriving (Typeable)
+
+instance B.Binary PeerList where
+  get = PeerList <$> B.get
+  put (PeerList pids) = B.put pids
+
+--------------------------------------------------------------------------------
+-- Message receive worker
+
+-- | This closure is spawned once per machine running a distributed
+-- Par computation and handles incoming 'WorkFinished' and 'PeerList'
+-- messages. It also /receives/ steal requests and /sends/ steal
+-- responses.
+receiveWorker :: ProcessM ()
+receiveWorker = do
+    receiveWait [ match handleWorkFinished
+--                , match handlePeerList
+--                , roundTripResponse handleStealRequest
+--                , matchUnknownThrow
+                ]
+    receiveWorker
+  where
+#ifdef DEBUG
+    handleWorkFinished :: forall a . (Show a, Typeable a) => 
+                          WorkFinished a -> ProcessM ()
+#else
+    handleWorkFinished :: WorkFinished a -> ProcessM ()
+#endif
+    handleWorkFinished (WorkFinished iid pld) = liftIO $ do
+      -- when we receive a result, we have to look up the IVar by its
+      -- id in the waitingIVars map, then push a 'put' to a local
+      -- worker's queue, removing the IVar from the map.
+      wiv <- modifyHotVar waitingIVars $ \im ->
+               case IntMap.updateLookupWithKey (const (const Nothing)) iid im of
+                 (Just iv, im') -> (im', iv)
+                 (Nothing, _)   -> error $ printf " Missing IVar id %d" iid
+      (cap, _) <- threadCapability =<< myThreadId
+      case wiv of
+        (WIVar iv) ->
+          case (cast iv :: Maybe (IVar a)) of
+            Just iv' -> pushWork cap $ put_ iv' pld                        
+            Nothing  -> error $ printf "Failed cast from %s to %s"
+                          (show $ typeOf iv) (show $ typeOf pld)
+
+runParDist = undefined
 
 --------------------------------------------------------------------------------
 -- <boilerplate>
@@ -483,6 +611,9 @@ newFull :: (Show a, NFData a) => a -> Par (IVar a)
 newFull_ ::  Show a => a -> Par (IVar a)
 runPar   :: Show a => Par a -> a
 runParIO :: Show a => Par a -> IO a
+runParDist :: Show a => Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
+longSpawn  :: (Show a, NFData a, Typeable a) 
+           => Closure (ProcessM a) -> Par (IVar a)
 #else
 spawn      :: NFData a => Par a -> Par (IVar a)
 spawn_     :: Par a -> Par (IVar a)
@@ -495,7 +626,9 @@ runParIO   :: Par a -> IO a
 -- TODO: Figure out the type signature for this. Should it be a
 -- wrapper around CH's remoteInit? How much flexibility should we
 -- offer with args?
--- runParDist :: Par a -> ProcessM a 
+runParDist :: Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
+longSpawn  :: (NFData a, Typeable a) 
+           => Closure (ProcessM a) -> Par (IVar a)
 newFull    :: NFData a => a -> Par (IVar a)
 newFull_   :: a -> Par (IVar a)
 
@@ -521,5 +654,25 @@ instance Functor Par where
 instance Applicative Par where
    (<*>) = ap
    pure  = return
+
+-- Binary instance for TypeReps; hopefully can go away with 7.4 per
+-- http://hackage.haskell.org/trac/ghc/ticket/5568. Right now CH just
+-- encodes the String returned by show typeRep, which means types with
+-- the same name across modules could clash.
+
+instance B.Binary TypeRep where
+  get = TypeRep <$> B.get <*> B.get <*> B.get
+  put (TypeRep fp tc trs) = 
+    B.put fp >> B.put tc >> B.put trs
+
+instance B.Binary TyCon where
+  get = TyCon <$> B.get <*> B.get <*> B.get <*> B.get
+  put (TyCon h p m n) =
+    B.put h >> B.put p >> B.put m >> B.put n
+
+instance B.Binary Fingerprint where
+  get = Fingerprint <$> B.get <*> B.get
+  put (Fingerprint w1 w2) = B.put w1 >> B.put w2
+
 -- </boilerplate>
 --------------------------------------------------------------------------------
