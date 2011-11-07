@@ -491,7 +491,7 @@ instance B.Binary StealRequest where
   put (StealRequest pid) = B.put pid
 
 data StealResponse = 
-  StealResponse (Maybe (Closure (ProcessM ())))
+  StealResponse (Maybe (Closure Payload))
   deriving (Typeable)
 
 instance B.Binary StealResponse where
@@ -525,7 +525,7 @@ type IVarId = Int
 -- from the queue.
 longQueue :: HotVar (Deque (IVarId, (MatchM () ())))
 longQueue = unsafePerformIO $ newHotVar emptydeque
-
+{-
 wrapWork :: String -> Payload -> IVarId -> ProcessId -> ProcessM ()
 wrapWork n pld iid pid = do
   clos <- makeClosure n pld
@@ -535,9 +535,9 @@ wrapWork n pld iid pid = do
     Just a -> send pid (WorkFinished iid a)
 
 remotable ['wrapWork]
-
+-}
 {-# INLINE longSpawn #-}
-longSpawn (Closure n pld) = do
+longSpawn clo@(Closure n pld) = do
   iv <- new
   liftIO $ do 
     ivarid <- hashUnique <$> newUnique
@@ -560,7 +560,7 @@ longSpawn (Closure n pld) = do
                                     (ivarid, undefined))
             when dbg $ printf " Sending stolen work to %s\n" (show pid)
             return (StealResponse 
-                      (Just ($(mkClosure 'wrapWork) n pld ivarid myPid))
+                    (makePayloadClosure clo)
                    , ())
     modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
     when dbg $ do (no, _) <- threadCapability =<< myThreadId
