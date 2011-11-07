@@ -37,9 +37,12 @@ import Control.Concurrent hiding (yield)
 import qualified Data.Binary as B
 import Data.Data
 import Data.Dynamic
+import Data.Function
 import Data.IORef
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
+import Data.List
+import Data.Ord
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Typeable.Internal
@@ -489,25 +492,22 @@ data LongWork where
 longQueue :: HotVar (Deque LongWork)
 longQueue = unsafePerformIO $ newHotVar emptydeque
 
--- | In order to keep a global map of 'IVar's ready to receive
--- remotely-computed results, we have to wrap the differently-typed
--- 'IVar's.
-data WrappedIVar where
-  WIVar :: (Typeable a) => IVar a -> WrappedIVar
-
-{-# NOINLINE waitingIVars #-}
--- | A global 'IntMap' of 'WrappedIVar's, indexed by the unique
--- identifier created when 'longSpawn' was invoked to create the
--- 'IVar'.
-waitingIVars :: HotVar (IntMap WrappedIVar)
-waitingIVars = unsafePerformIO $ newHotVar IntMap.empty
-
 {-# INLINE longSpawn #-}
 longSpawn work = do
   iv <- new
-  liftIO $ do ivarid <- hashUnique <$> newUnique
-              modifyHotVar_ longQueue (addfront (LW ivarid work))
-              modifyHotVar_ waitingIVars (IntMap.insert ivarid (WIVar iv))
+  liftIO $ do 
+    ivarid <- hashUnique <$> newUnique
+    let pred (WorkFinished iid _)      = iid == ivarid
+        matchThis (WorkFinished _ pld) = liftIO $ do
+          (cap, _) <- threadCapability =<< myThreadId
+          pushWork cap $ put_ iv pld
+          modifyHotVar_ matchIVars (deleteBy ((==) `on` fst) 
+                                   (ivarid, undefined))
+    modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
+    when dbg $ do (no, _) <- threadCapability =<< myThreadId
+                  sn <- hashStableName <$> makeStableName work
+                  printf " [%d] Pushing work %d on longQueue\n" no sn
+    modifyHotVar_ longQueue (addfront (LW ivarid work))
   return iv
 
 --------------------------------------------------------------------------------
@@ -525,13 +525,12 @@ data StealResponse a = StealResponse ProcessId IVarId (Closure (ProcessM a))
 
 instance B.Binary a => B.Binary (StealResponse a) where
   get = StealResponse <$> B.get <*> B.get <*> B.get
-  put (StealResponse pid iid c) = B.put c >> B.put iid >> B.put c
+  put (StealResponse pid iid c) = B.put pid >> B.put iid >> B.put c
 
-data WorkFinished a where
-  WorkFinished :: Typeable a => IVarId -> a -> WorkFinished a
+data WorkFinished a = WorkFinished IVarId a
                     deriving (Typeable)
 
-instance (B.Binary a, Typeable a) => B.Binary (WorkFinished a) where
+instance (B.Binary a) => B.Binary (WorkFinished a) where
   get = WorkFinished <$> B.get <*> B.get
   put (WorkFinished iid a) = B.put iid >> B.put a
 
@@ -545,40 +544,31 @@ instance B.Binary PeerList where
 --------------------------------------------------------------------------------
 -- Message receive worker
 
+{-# NOINLINE matchIVars #-}
+-- | A list of 'MatchM' actions for the 'receiveWorker' thread to try
+-- in order to handle 'WorkFinished' messages.
+matchIVars :: HotVar [(IVarId, MatchM () ())]
+matchIVars = unsafePerformIO $ newHotVar []
+
+{-# NOINLINE parWorkerPids #-}
+parWorkerPids :: HotVar (Vector ProcessId)
+parWorkerPids = unsafePerformIO $ newHotVar V.empty
+
 -- | This closure is spawned once per machine running a distributed
 -- Par computation and handles incoming 'WorkFinished' and 'PeerList'
 -- messages. It also /receives/ steal requests and /sends/ steal
 -- responses.
 receiveWorker :: ProcessM ()
 receiveWorker = do
-    receiveWait [ match handleWorkFinished
---                , match handlePeerList
+    matchIVars <- map snd <$> liftIO (readHotVar matchIVars)
+    receiveWait $ [matchPeerList] ++ matchIVars ++ [matchUnknownThrow]
+--    receiveWait [ 
 --                , roundTripResponse handleStealRequest
---                , matchUnknownThrow
-                ]
+--                ]
     receiveWorker
   where
-#ifdef DEBUG
-    handleWorkFinished :: forall a . (Show a, Typeable a) => 
-                          WorkFinished a -> ProcessM ()
-#else
-    handleWorkFinished :: WorkFinished a -> ProcessM ()
-#endif
-    handleWorkFinished (WorkFinished iid pld) = liftIO $ do
-      -- when we receive a result, we have to look up the IVar by its
-      -- id in the waitingIVars map, then push a 'put' to a local
-      -- worker's queue, removing the IVar from the map.
-      wiv <- modifyHotVar waitingIVars $ \im ->
-               case IntMap.updateLookupWithKey (const (const Nothing)) iid im of
-                 (Just iv, im') -> (im', iv)
-                 (Nothing, _)   -> error $ printf " Missing IVar id %d" iid
-      (cap, _) <- threadCapability =<< myThreadId
-      case wiv of
-        (WIVar iv) ->
-          case (cast iv :: Maybe (IVar a)) of
-            Just iv' -> pushWork cap $ put_ iv' pld                        
-            Nothing  -> error $ printf "Failed cast from %s to %s"
-                          (show $ typeOf iv) (show $ typeOf pld)
+    matchPeerList = match $ \(PeerList pids) -> liftIO $
+      modifyHotVar_ parWorkerPids (const $ V.fromList pids)
 
 runParDist = undefined
 
@@ -612,7 +602,7 @@ newFull_ ::  Show a => a -> Par (IVar a)
 runPar   :: Show a => Par a -> a
 runParIO :: Show a => Par a -> IO a
 runParDist :: Show a => Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
-longSpawn  :: (Show a, NFData a, Typeable a) 
+longSpawn  :: (Show a, NFData a, Serializable a) 
            => Closure (ProcessM a) -> Par (IVar a)
 #else
 spawn      :: NFData a => Par a -> Par (IVar a)
