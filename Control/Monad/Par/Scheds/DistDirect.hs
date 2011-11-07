@@ -60,7 +60,10 @@ import qualified Control.Monad.Par.Class as PC
 import Control.DeepSeq
 
 import Remote hiding (spawn)
+import Remote.Call
+import Remote.Closure
 import Remote.Encoding
+import Remote.Process hiding (spawn)
 
 --------------------------------------------------------------------------------
 -- Configuration Toggles 
@@ -145,6 +148,9 @@ takeback  (DQ ls)     = (DQ rest, Just final)
   loop (h:tl) acc = loop tl (h:acc)
  
 dqlen (DQ l) = length l
+
+dqDeleteBy :: (a -> a -> Bool) -> a -> Deque a -> Deque a
+dqDeleteBy = undefined
 
 --------------------------------------------------------------------------------
 -- Helpers #2:  Atomic Variables
@@ -475,42 +481,6 @@ runParIO userComp = do
 runPar = unsafePerformIO . runParIO
 
 --------------------------------------------------------------------------------
--- Remote work queues and IVar maps
-
--- | Machine-unique identifier for 'IVar's
-type IVarId = Int
-
--- | 'LongWork' represents a unit of 'Par' work that /may/ be stolen
--- by a remote worker. The 'ProcessId' specifies the receive daemon on
--- the stealee, so that the stealer knows where to send the answer.
-data LongWork where 
-  LW :: IVarId -> Closure (ProcessM a) -> LongWork
-
-{-# NOINLINE longQueue #-}
--- | One global queue for 'LongWork', stealable either remotely or
--- locally
-longQueue :: HotVar (Deque LongWork)
-longQueue = unsafePerformIO $ newHotVar emptydeque
-
-{-# INLINE longSpawn #-}
-longSpawn work = do
-  iv <- new
-  liftIO $ do 
-    ivarid <- hashUnique <$> newUnique
-    let pred (WorkFinished iid _)      = iid == ivarid
-        matchThis (WorkFinished _ pld) = liftIO $ do
-          (cap, _) <- threadCapability =<< myThreadId
-          pushWork cap $ put_ iv pld
-          modifyHotVar_ matchIVars (deleteBy ((==) `on` fst) 
-                                   (ivarid, undefined))
-    modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
-    when dbg $ do (no, _) <- threadCapability =<< myThreadId
-                  sn <- hashStableName <$> makeStableName work
-                  printf " [%d] Pushing work %d on longQueue\n" no sn
-    modifyHotVar_ longQueue (addfront (LW ivarid work))
-  return iv
-
---------------------------------------------------------------------------------
 -- Remote message types
 
 data StealRequest = StealRequest ProcessId
@@ -520,12 +490,13 @@ instance B.Binary StealRequest where
   get = StealRequest <$> B.get
   put (StealRequest pid) = B.put pid
 
-data StealResponse a = StealResponse ProcessId IVarId (Closure (ProcessM a))
-                       deriving (Typeable)
+data StealResponse = 
+  StealResponse (Maybe (Closure (ProcessM ())))
+  deriving (Typeable)
 
-instance B.Binary a => B.Binary (StealResponse a) where
-  get = StealResponse <$> B.get <*> B.get <*> B.get
-  put (StealResponse pid iid c) = B.put pid >> B.put iid >> B.put c
+instance B.Binary StealResponse where
+  get = StealResponse <$> B.get 
+  put (StealResponse pld) = B.put pld
 
 data WorkFinished a = WorkFinished IVarId a
                     deriving (Typeable)
@@ -540,6 +511,62 @@ data PeerList = PeerList [ProcessId]
 instance B.Binary PeerList where
   get = PeerList <$> B.get
   put (PeerList pids) = B.put pids
+
+--------------------------------------------------------------------------------
+-- Remote work queues and IVar maps
+
+-- | Machine-unique identifier for 'IVar's
+type IVarId = Int
+
+{-# NOINLINE longQueue #-}
+-- | One global queue for 'longSpawn'ed work, stealable either
+-- remotely or locally. The queue contains one-shot 'MatchM' actions
+-- that respond to 'StealRequest' messages, and then remove themselves
+-- from the queue.
+longQueue :: HotVar (Deque (IVarId, (MatchM () ())))
+longQueue = unsafePerformIO $ newHotVar emptydeque
+
+wrapWork :: String -> Payload -> IVarId -> ProcessId -> ProcessM ()
+wrapWork n pld iid pid = do
+  clos <- makeClosure n pld
+  ma <- invokeClosure clos
+  case ma of
+    Nothing -> error $ printf "Can't invoke closure %s\n" n
+    Just a -> send pid (WorkFinished iid a)
+
+remotable ['wrapWork]
+
+{-# INLINE longSpawn #-}
+longSpawn (Closure n pld) = do
+  iv <- new
+  liftIO $ do 
+    ivarid <- hashUnique <$> newUnique
+    let pred (WorkFinished iid _)      = iid == ivarid
+        -- the "continuation" to be invoked when receiving a
+        -- 'WorkFinished' message for our 'IVarId'
+        matchThis (WorkFinished _ pld) = liftIO $ do
+          (cap, _) <- threadCapability =<< myThreadId
+          when dbg $ printf " [%d] Received answer from longSpawn\n" cap
+          pushWork cap $ put_ iv pld
+          modifyHotVar_ matchIVars (deleteBy ((==) `on` fst) 
+                                   (ivarid, undefined))
+        -- when our work unit is at the front of the longQueue, this
+        -- matcher will respond to any 'StealRequest' messages with
+        -- our work.
+        responder (StealRequest pid) = do
+          myPid <- getSelfPid
+          liftIO $ do
+            modifyHotVar_ longQueue (dqDeleteBy ((==) `on` fst)
+                                    (ivarid, undefined))
+            when dbg $ printf " Sending stolen work to %s\n" (show pid)
+            return (StealResponse 
+                      (Just ($(mkClosure 'wrapWork) n pld ivarid myPid))
+                   , ())
+    modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
+    when dbg $ do (no, _) <- threadCapability =<< myThreadId
+                  printf " [%d] Pushing work %s on longQueue\n" no n
+    modifyHotVar_ longQueue (addback (ivarid, roundtripResponse responder))
+  return iv
 
 --------------------------------------------------------------------------------
 -- Message receive worker
@@ -561,14 +588,32 @@ parWorkerPids = unsafePerformIO $ newHotVar V.empty
 receiveWorker :: ProcessM ()
 receiveWorker = do
     matchIVars <- map snd <$> liftIO (readHotVar matchIVars)
-    receiveWait $ [matchPeerList] ++ matchIVars ++ [matchUnknownThrow]
---    receiveWait [ 
---                , roundTripResponse handleStealRequest
---                ]
+    matchSteal <- tryRespondSteal
+    receiveWait $ [matchSteal] ++ matchIVars ++ [matchPeerList, matchUnknownThrow]
     receiveWorker
   where
     matchPeerList = match $ \(PeerList pids) -> liftIO $
-      modifyHotVar_ parWorkerPids (const $ V.fromList pids)
+                      modifyHotVar_ parWorkerPids (const $ V.fromList pids)
+    tryRespondSteal = liftIO $ do
+      mr <- modifyHotVar longQueue takefront
+      case mr of
+        Just (_, mr) -> return mr
+        Nothing -> return $ 
+          roundtripResponse $ \(StealRequest _) ->    
+            return (StealResponse Nothing, ())
+
+--------------------------------------------------------------------------------
+-- Stealing worker
+
+-- TODO: Implement stealing worker daemon. Design idea: a 'Chan ()'
+-- that this daemon blockingly reads in a loop. When local workers are
+-- starved for work and want to steal remotely, they put a '()' into
+-- the 'Chan', making the daemon start looking for work.
+
+-- Questions: How long should it pester other nodes until giving up?
+--            Should it just randomly choose nodes to pester?  If
+--            local workers wind up back to work before successfully
+--            stealing, should this detect and give up?
 
 runParDist = undefined
 
