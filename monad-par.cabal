@@ -118,7 +118,7 @@ Library
                , random >= 1.0.0
                , transformers >= 0.2.2.0
                , vector
-               , containers
+               , containers >= 0.4.2.0
                , mtl >= 2.0.1.0
                , parallel >= 3.1
                , binary >= 0.5

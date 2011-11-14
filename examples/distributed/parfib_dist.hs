@@ -31,7 +31,7 @@ fibIO 0 = return 1
 fibIO 1 = return 1
 fibIO x = (+) <$> fibIO (x-2) <*> fibIO (x-1)
 
---remotable ['fibIO]
+-- remotable ['fibIO]
 
 
 
@@ -43,19 +43,19 @@ fibPar x = (+) <$> fibPar (x-2) <*> fibPar (x-1)
 --------------------------------------------------------------------------------
 -- Hand-tweaked Closure and RemoteCallMetaData code
 
-parfib1__0__impl :: Payload -> ProcessM FibType
+parfib1__0__impl :: Payload -> IO FibType
 parfib1__0__impl a
   = do res <- liftIO (Remote.Encoding.serialDecode a)
        case res of 
          Just a1 -> liftIO $ runParIO (parfib1 a1)
          _ -> error "Bad decoding in closure splice of parfib1"
 
-parfib1__0__implPl :: Payload -> ProcessM Payload
+parfib1__0__implPl :: Payload -> IO Payload
 parfib1__0__implPl a
   = do res <- parfib1__0__impl a
        liftIO (Remote.Encoding.serialEncode res)
 
-parfib1__closure :: FibType -> Closure (ProcessM FibType)
+parfib1__closure :: FibType -> Closure (Par FibType)
 parfib1__closure
   = \ a1
       -> Remote.Closure.Closure
@@ -90,6 +90,7 @@ parfib1B n c = do
     x  <- get xf
     return (x+y)
 -}
+
 main = do 
     args <- getArgs
     let (version, size, cutoff) = case args of 
@@ -102,9 +103,10 @@ main = do
         "monad"  -> do 
 		if cutoff == 1 
                   then do putStrLn "Using non-thresholded version:"
-                          print <$> (runParDist (Just "config") 
-                                                [__remoteCallMetaData]
-                                                (parfib1 size) :: IO FibType)
+                          ans <- (runParDist (Just "config") 
+                                                 [__remoteCallMetaData]
+                                                 (parfib1 size) :: IO FibType)
+                          putStrLn $ "Final answer: " ++ show ans
 		  else    undefined -- print <$> (runParDist $ parfib1B size cutoff :: IO FibType)
         -- TEMP: force thresholded version even if cutoff==1
         "thresh" -> undefined -- print <$> (runParDist $ parfib1B size cutoff :: IO FibType)

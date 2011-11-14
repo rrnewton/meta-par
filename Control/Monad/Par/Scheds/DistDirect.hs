@@ -34,6 +34,7 @@ module Control.Monad.Par.Scheds.DistDirect (
 
 import Control.Applicative
 import Control.Concurrent hiding (yield)
+import Control.Concurrent.Chan
 import qualified Data.Binary as B
 import Data.Data
 import Data.Dynamic
@@ -64,13 +65,14 @@ import Remote hiding (spawn)
 import Remote.Call
 import Remote.Closure
 import Remote.Encoding
+import qualified Remote.Process as P (spawn)
 import Remote.Process hiding (spawn)
 
 --------------------------------------------------------------------------------
 -- Configuration Toggles 
 --------------------------------------------------------------------------------
 
-#define DEBUG
+-- #define DEBUG
 dbg :: Bool
 #ifdef DEBUG
 dbg = True
@@ -112,7 +114,6 @@ newtype IVar a = IVar (IORef (IVarContents a))
 
 data IVarContents a = Full a | Empty | Blocked [a -> Par ()]
 
-
 --------------------------------------------------------------------------------
 -- Helpers #1:  Simple Deques
 --------------------------------------------------------------------------------
@@ -152,6 +153,8 @@ dqlen (DQ l) = length l
 
 dqDeleteBy :: (a -> a -> Bool) -> a -> Deque a -> Deque a
 dqDeleteBy = undefined
+
+dqToList (DQ xs) = xs
 
 --------------------------------------------------------------------------------
 -- Helpers #2:  Atomic Variables
@@ -307,7 +310,7 @@ workerLoop = do
   when (dbg && die) $ printf " [%d] Shutting down a thread\n" no
   unless die $ do
     -- first, wait until there is work to do
-    when dbg $ printf "[%d] Entering worker loop\n" no
+--    when dbg $ printf "[%d] Entering worker loop\n" no
 #ifdef IDLEWORKERS
     waitQSem =<< idleSem
 #else
@@ -342,19 +345,21 @@ rand ref =
 steal :: IO ()
 steal = do
   (Sched { no=me, rng }) <- mySched
-  when dbg $ printf " [%d] stealing\n" me
+--  when dbg $ printf " [%d] entering steal loop\n" me
   let getNext :: IO Int
       getNext = rand rng
-      loop :: Int -> IO ()
-      loop i | i == me   = loop =<< getNext
-             | otherwise = do
+      numTries = numCapabilities * 20 -- TODO: tweak this
+      loop :: Int -> Int -> IO ()
+      loop 0 _ = {-signalQSem remoteStealSem >>-} return ()
+      loop n i | i == me   = loop (n-1) =<< getNext
+               | otherwise = do
         (Sched { workpool, no=target }) <- getSched i
-        when dbg $ printf " [%d] trying steal from %d\n" me target
+--        when dbg $ printf " [%d] trying steal from %d\n" me target
         -- try and take off the end of the target's workpool
         mtask <- modifyHotVar workpool takeback
         case mtask of
           -- no work found; try another random
-          Nothing   -> loop =<< getNext
+          Nothing   -> loop (n-1) =<< getNext
           -- found work; perform it, then return () to reenter workerLoop
           Just task -> do
             when dbg $ do sn <- makeStableName task
@@ -362,7 +367,7 @@ steal = do
                             me (hashStableName sn) target
             C.runContT (unPar task) $ \() -> do
               when dbg $ printf " [%d] finished stolen work from %d\n" me target
-  loop =<< getNext
+  loop numTries =<< getNext
 
 {-# INLINE new #-}
 -- | Create a new, empty 'IVar'
@@ -484,12 +489,12 @@ runPar = unsafePerformIO . runParIO
 --------------------------------------------------------------------------------
 -- Remote message types
 
-data StealRequest = StealRequest ProcessId
+data StealRequest = StealRequest
                     deriving (Typeable)
 
 instance B.Binary StealRequest where
-  get = StealRequest <$> B.get
-  put (StealRequest pid) = B.put pid
+  get = return StealRequest
+  put StealRequest = B.put ()
 
 data StealResponse = 
   StealResponse (Maybe (IVarId, Closure Payload))
@@ -526,17 +531,7 @@ type IVarId = Int
 -- from the queue.
 longQueue :: HotVar (Deque (IVarId, Closure Payload))
 longQueue = unsafePerformIO $ newHotVar emptydeque
-{-
-wrapWork :: String -> Payload -> IVarId -> ProcessId -> ProcessM ()
-wrapWork n pld iid pid = do
-  clos <- makeClosure n pld
-  ma <- invokeClosure clos
-  case ma of
-    Nothing -> error $ printf "Can't invoke closure %s\n" n
-    Just a -> send pid (WorkFinished iid a)
 
-remotable ['wrapWork]
--}
 {-# INLINE longSpawn #-}
 longSpawn clo@(Closure n pld) = do
   let pclo = fromMaybe (error "Could not find Payload closure")
@@ -550,25 +545,33 @@ longSpawn clo@(Closure n pld) = do
         matchThis (WorkFinished _ pld) = liftIO $ do
           (cap, _) <- threadCapability =<< myThreadId
           when dbg $ printf " [%d] Received answer from longSpawn\n" cap
+          putResult pld
+        putResult pld = do
+          (cap, _) <- threadCapability =<< myThreadId
           dpld <- fromMaybe (error "failed to decode payload") 
                         <$> serialDecode pld
+          when dbg $ printf " [%d] Pushing put of remote work\n" cap
           pushWork cap $ put_ iv dpld
-          modifyHotVar_ matchIVars (deleteBy ((==) `on` fst) 
-                                   (ivarid, undefined))
-    modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
+          modifyHotVar_ matchIVars (IntMap.delete ivarid)
+    modifyHotVar_ matchIVars (IntMap.insert ivarid 
+                                            (matchIf pred matchThis, putResult))
     when dbg $ do (no, _) <- threadCapability =<< myThreadId
                   printf " [%d] Pushing work %s on longQueue\n" no n
     modifyHotVar_ longQueue (addback (ivarid, pclo))
+--    when dbg $ do q <- readHotVar longQueue
+--                  printf " lq: %s\n" (show (dqToList q))
   return iv
 
 --------------------------------------------------------------------------------
 -- Message receive worker
 
 {-# NOINLINE matchIVars #-}
--- | A list of 'MatchM' actions for the 'receiveWorker' thread to try
--- in order to handle 'WorkFinished' messages.
-matchIVars :: HotVar [(IVarId, MatchM () ())]
-matchIVars = unsafePerformIO $ newHotVar []
+-- | An IntMap of 'MatchM' actions for the 'receiveWorker' thread to
+-- try in order to handle 'WorkFinished' messages. Also contains the
+-- function to put completed work in the waiting IVar, in case we
+-- steal locally.
+matchIVars :: HotVar (IntMap (MatchM () (), Payload -> IO ()))
+matchIVars = unsafePerformIO $ newHotVar IntMap.empty
 
 {-# NOINLINE parWorkerPids #-}
 parWorkerPids :: HotVar (Vector ProcessId)
@@ -580,24 +583,23 @@ parWorkerPids = unsafePerformIO $ newHotVar V.empty
 -- responses.
 receiveWorker :: ProcessM ()
 receiveWorker = do
-    matchIVars <- map snd <$> liftIO (readHotVar matchIVars)
-    matchSteal <- tryRespondSteal
-    receiveWait $ [matchSteal] ++ matchIVars ++ [matchPeerList, matchUnknownThrow]
+--    when dbg $ liftIO $ do iids <- map fst <$> readHotVar matchIVars
+--                           printf "IVars %s\n" (show iids)
+    matchIVars <- IntMap.foldr' ((:) . fst) 
+                    [matchPeerList, matchUnknownThrow] -- fallthrough cases
+                    <$> liftIO (readHotVar matchIVars)
+    receiveTimeout 10000 $ (matchSteal:matchIVars)
     receiveWorker
   where
     matchPeerList = match $ \(PeerList pids) -> liftIO $
                       modifyHotVar_ parWorkerPids (const $ V.fromList pids)
-    tryRespondSteal = liftIO $ do
-      p <- modifyHotVar longQueue takefront
-      case p of
-        Just _ -> return $
-          roundtripResponse $ \(StealRequest stealer) -> do
-            when dbg $ liftIO $ printf " Sending stolen work to %s\n" 
-                                  (show stealer)
-            return (StealResponse p, ())
-        Nothing -> return $ 
-          roundtripResponse $ \(StealRequest _) ->    
-            return (StealResponse Nothing, ())
+    matchSteal = roundtripResponse $ \StealRequest -> do
+                   p <- liftIO $ modifyHotVar longQueue takefront
+                   case p of
+                     Just _ -> do
+                       when dbg $ liftIO $ printf " Sending stolen work\n" 
+                       return (StealResponse p, ())
+                     Nothing -> return (StealResponse Nothing, ())
 
 --------------------------------------------------------------------------------
 -- Stealing worker
@@ -612,7 +614,83 @@ receiveWorker = do
 --            local workers wind up back to work before successfully
 --            stealing, should this detect and give up?
 
-runParDist = undefined
+-- | Semaphore that gets signalled when a local worker fails to find
+-- local work. The stealWorker waits on this.
+{-# NOINLINE remoteStealSem #-}
+remoteStealSem :: QSem
+remoteStealSem = unsafePerformIO $ newQSem 0
+
+stealWorker :: ProcessM ()
+stealWorker = do
+  -- wait until a worker needs to steal
+  liftIO $ do 
+--    waitQSem remoteStealSem
+    when dbg $ do 
+      q <- readHotVar longQueue
+      printf "Trying to steal long work\tlq:%s\n" (show $ dqlen q)
+  -- first, check local queue for work
+  p <- liftIO $ modifyHotVar longQueue takefront
+  case p of
+    Just (ivarid, pclo@(Closure _ env)) -> do
+      -- if we have local work to do, just go ahead and do it, and
+      -- make sure the receiveWorker stops listening for an answer
+      -- for that work
+      mpw <- liftIO $ IntMap.lookup ivarid <$> readHotVar matchIVars
+      pclo' <- evaluateClosure pclo
+      case (mpw, pclo') of
+        (Just pw, Just iof) -> liftIO $ do
+          let wrappedWork = liftIO (iof env >>= (snd pw))
+          (cap, _) <- threadCapability =<< myThreadId
+          when dbg $ printf " [%d] pushing local longQueue work\n" cap
+          pushWork cap wrappedWork
+        _ -> error "couldn't find closure for local steal"
+    Nothing -> do
+      -- otherwise, the local longQueue is empty, and we have to start
+      -- asking around for work.
+      stealees <- liftIO $ readHotVar parWorkerPids
+      let npeers = V.length stealees
+          numTries = npeers * 5 -- TODO: tune this
+          rand = liftIO $ randomRIO (0, npeers-1)
+          -- if we run out of tries, give up
+          loop 0 = return ()
+          -- while we have tries, choose a random peer and try to steal
+          loop n = do
+            stealee <- (V.!) stealees <$> rand
+            isMe <- isPidLocal stealee
+            unless isMe $ do
+              response <- roundtripQuery PldUser stealee StealRequest
+              case response of
+                Left err -> error (show err)
+                -- message success, but nothing to steal from this peer
+                Right (StealResponse Nothing) -> loop (n-1)
+                Right (StealResponse (Just (ivarid, pclo@(Closure _ env)))) -> do
+                  -- successful steal; wrap up the work and push on a queue
+                  pclo' <- evaluateClosure pclo
+                  case pclo' of
+                    Just iof -> liftIO $ do
+                      let wrappedWork = 
+                            liftIO $ do
+                               pld <- iof env
+                               liftIO $ writeChan finishedChan 
+                                          (stealee, WorkFinished ivarid pld)
+                      (cap, _) <- threadCapability =<< myThreadId
+                      when dbg $ printf " [%d] pushing stolen work\n" cap
+                      pushWork cap wrappedWork
+      loop numTries
+  stealWorker
+  
+
+-- | When local workers finish remotely-stolen work, they put in this
+-- Chan to send back to stealee.
+{-# NOINLINE finishedChan #-}
+finishedChan :: Chan (ProcessId, WorkFinished)
+finishedChan = unsafePerformIO newChan
+
+finishedWorker :: ProcessM ()
+finishedWorker = do
+  (pid, wfm) <- liftIO $ readChan finishedChan
+  send pid wfm
+  finishedWorker
 
 --------------------------------------------------------------------------------
 -- <boilerplate>
@@ -643,9 +721,8 @@ newFull :: (Show a, NFData a) => a -> Par (IVar a)
 newFull_ ::  Show a => a -> Par (IVar a)
 runPar   :: Show a => Par a -> a
 runParIO :: Show a => Par a -> IO a
-runParDist :: Show a => Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
 longSpawn  :: (Show a, NFData a, Serializable a) 
-           => Closure (ProcessM a) -> Par (IVar a)
+           => Closure (Par a) -> Par (IVar a)
 #else
 spawn      :: NFData a => Par a -> Par (IVar a)
 spawn_     :: Par a -> Par (IVar a)
@@ -658,9 +735,8 @@ runParIO   :: Par a -> IO a
 -- TODO: Figure out the type signature for this. Should it be a
 -- wrapper around CH's remoteInit? How much flexibility should we
 -- offer with args?
-runParDist :: Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
-longSpawn  :: (NFData a, Typeable a) 
-           => Closure (ProcessM a) -> Par (IVar a)
+longSpawn  :: (NFData a, Serializable a) 
+           => Closure (Par a) -> Par (IVar a)
 newFull    :: NFData a => a -> Par (IVar a)
 newFull_   :: a -> Par (IVar a)
 
@@ -708,3 +784,57 @@ instance B.Binary Fingerprint where
 
 -- </boilerplate>
 --------------------------------------------------------------------------------
+
+
+receiveWorkerInit = setDaemonic >> receiveWorker
+
+remotable ['receiveWorkerInit]
+
+
+--------------------------------------------------------------------------------
+-- Initialization for Distributed stuff
+
+#ifdef DEBUG
+initParDist :: Show a => Par a -> MVar a -> String -> ProcessM ()
+#else
+initParDist :: Par a -> MVar a -> String -> ProcessM ()
+#endif
+
+initParDist userComp ans "MASTER" = do
+  commonInit
+  myRcvPid <- spawnLocal (setDaemonic >> receiveWorker)
+  workerNids <- flip findPeerByRole "WORKER" <$> getPeers
+  liftIO $ printf "Found %d peers\n" (length workerNids)
+  let startfn nid = nameQueryOrStart nid "receiveWorker" receiveWorkerInit__closure
+  workerPids <- mapM startfn workerNids
+  let pids = myRcvPid:workerPids
+  forM_ pids $ flip send (PeerList pids)
+  let wrappedComp = do res <- userComp
+                       liftIO $ putMVar ans res
+  liftIO $ runParIO wrappedComp
+  when dbg $ liftIO $ printf "Exiting initParDist\n"
+
+initParDist _ _ "WORKER" = do
+  commonInit
+  -- wait for the master node to spawn the receiveWorker
+  receiveWait []
+
+initParDist _ _ _ = error "CloudHaskell Role must be MASTER or WORKER"
+
+commonInit = do
+  spawnLocal (setDaemonic >> finishedWorker)
+  spawnLocal (setDaemonic >> stealWorker)
+  -- hack: start the global scheduler right away with trivial Par comp
+  liftIO $ runParIO (return ())
+
+
+#ifdef DEBUG
+runParDist :: Show a => Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
+#else
+runParDist :: Maybe FilePath -> [RemoteCallMetaData] -> Par a -> IO a
+#endif
+
+runParDist cfg rcmd userComp = do
+  ans <- newEmptyMVar
+  remoteInit cfg (__remoteCallMetaData:rcmd) (initParDist userComp ans)
+  readMVar ans
