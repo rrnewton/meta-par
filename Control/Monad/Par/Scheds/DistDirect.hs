@@ -42,6 +42,7 @@ import Data.IORef
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import Data.List
+import Data.Maybe
 import Data.Ord
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -491,17 +492,17 @@ instance B.Binary StealRequest where
   put (StealRequest pid) = B.put pid
 
 data StealResponse = 
-  StealResponse (Maybe (Closure Payload))
+  StealResponse (Maybe (IVarId, Closure Payload))
   deriving (Typeable)
 
 instance B.Binary StealResponse where
   get = StealResponse <$> B.get 
   put (StealResponse pld) = B.put pld
 
-data WorkFinished a = WorkFinished IVarId a
+data WorkFinished = WorkFinished IVarId Payload
                     deriving (Typeable)
 
-instance (B.Binary a) => B.Binary (WorkFinished a) where
+instance B.Binary WorkFinished where
   get = WorkFinished <$> B.get <*> B.get
   put (WorkFinished iid a) = B.put iid >> B.put a
 
@@ -523,7 +524,7 @@ type IVarId = Int
 -- remotely or locally. The queue contains one-shot 'MatchM' actions
 -- that respond to 'StealRequest' messages, and then remove themselves
 -- from the queue.
-longQueue :: HotVar (Deque (IVarId, (MatchM () ())))
+longQueue :: HotVar (Deque (IVarId, Closure Payload))
 longQueue = unsafePerformIO $ newHotVar emptydeque
 {-
 wrapWork :: String -> Payload -> IVarId -> ProcessId -> ProcessM ()
@@ -538,6 +539,8 @@ remotable ['wrapWork]
 -}
 {-# INLINE longSpawn #-}
 longSpawn clo@(Closure n pld) = do
+  let pclo = fromMaybe (error "Could not find Payload closure")
+                     $ makePayloadClosure clo
   iv <- new
   liftIO $ do 
     ivarid <- hashUnique <$> newUnique
@@ -547,25 +550,15 @@ longSpawn clo@(Closure n pld) = do
         matchThis (WorkFinished _ pld) = liftIO $ do
           (cap, _) <- threadCapability =<< myThreadId
           when dbg $ printf " [%d] Received answer from longSpawn\n" cap
-          pushWork cap $ put_ iv pld
+          dpld <- fromMaybe (error "failed to decode payload") 
+                        <$> serialDecode pld
+          pushWork cap $ put_ iv dpld
           modifyHotVar_ matchIVars (deleteBy ((==) `on` fst) 
                                    (ivarid, undefined))
-        -- when our work unit is at the front of the longQueue, this
-        -- matcher will respond to any 'StealRequest' messages with
-        -- our work.
-        responder (StealRequest pid) = do
-          myPid <- getSelfPid
-          liftIO $ do
-            modifyHotVar_ longQueue (dqDeleteBy ((==) `on` fst)
-                                    (ivarid, undefined))
-            when dbg $ printf " Sending stolen work to %s\n" (show pid)
-            return (StealResponse 
-                    (makePayloadClosure clo)
-                   , ())
     modifyHotVar_ matchIVars ((ivarid, matchIf pred matchThis) :)
     when dbg $ do (no, _) <- threadCapability =<< myThreadId
                   printf " [%d] Pushing work %s on longQueue\n" no n
-    modifyHotVar_ longQueue (addback (ivarid, roundtripResponse responder))
+    modifyHotVar_ longQueue (addback (ivarid, pclo))
   return iv
 
 --------------------------------------------------------------------------------
@@ -595,9 +588,13 @@ receiveWorker = do
     matchPeerList = match $ \(PeerList pids) -> liftIO $
                       modifyHotVar_ parWorkerPids (const $ V.fromList pids)
     tryRespondSteal = liftIO $ do
-      mr <- modifyHotVar longQueue takefront
-      case mr of
-        Just (_, mr) -> return mr
+      p <- modifyHotVar longQueue takefront
+      case p of
+        Just _ -> return $
+          roundtripResponse $ \(StealRequest stealer) -> do
+            when dbg $ liftIO $ printf " Sending stolen work to %s\n" 
+                                  (show stealer)
+            return (StealResponse p, ())
         Nothing -> return $ 
           roundtripResponse $ \(StealRequest _) ->    
             return (StealResponse Nothing, ())

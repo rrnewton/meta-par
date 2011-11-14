@@ -31,6 +31,10 @@ fibIO 0 = return 1
 fibIO 1 = return 1
 fibIO x = (+) <$> fibIO (x-2) <*> fibIO (x-1)
 
+--remotable ['fibIO]
+
+
+
 fibPar :: FibType -> Par FibType
 fibPar 0 = return 1
 fibPar 1 = return 1
@@ -51,7 +55,7 @@ parfib1__0__implPl a
   = do res <- parfib1__0__impl a
        liftIO (Remote.Encoding.serialEncode res)
 
-parfib1__closure :: FibType -> Closure (IO FibType)
+parfib1__closure :: FibType -> Closure (ProcessM FibType)
 parfib1__closure
   = \ a1
       -> Remote.Closure.Closure
@@ -67,8 +71,6 @@ __remoteCallMetaData x
          "Main.parfib1__0__implPl"
          (Remote.Reg.putReg parfib1__closure "Main.parfib1__closure" x))
 
---remotable ['fibIO]
-
 -- Par monad version:
 parfib1 :: FibType -> Par FibType
 parfib1 n | n < 2 = return 1
@@ -78,6 +80,7 @@ parfib1 n = do
     x  <- get xf
     return (x+y)
 
+{-
 -- Par monad version, with threshold:
 parfib1B :: FibType -> FibType -> Par FibType
 parfib1B n c | n <= c = return $ fib n
@@ -86,7 +89,7 @@ parfib1B n c = do
     y  <-             parfib1B (n-2) c
     x  <- get xf
     return (x+y)
-
+-}
 main = do 
     args <- getArgs
     let (version, size, cutoff) = case args of 
@@ -98,11 +101,11 @@ main = do
     case version of 
         "monad"  -> do 
 		if cutoff == 1 
-                then do putStrLn "Using non-thresholded version:"
-                        print <$> (runParDist (Just "config") 
-                                              [__remoteCallMetaData]
-                                              (parfib1 size) :: IO FibType)
-		else    undefined -- print <$> (runParDist $ parfib1B size cutoff :: IO FibType)
+                  then do putStrLn "Using non-thresholded version:"
+                          print <$> (runParDist (Just "config") 
+                                                [__remoteCallMetaData]
+                                                (parfib1 size) :: IO FibType)
+		  else    undefined -- print <$> (runParDist $ parfib1B size cutoff :: IO FibType)
         -- TEMP: force thresholded version even if cutoff==1
         "thresh" -> undefined -- print <$> (runParDist $ parfib1B size cutoff :: IO FibType)
         _        -> error $ "unknown version: "++version
