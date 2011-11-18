@@ -604,11 +604,6 @@ receiveWorker = do
 --------------------------------------------------------------------------------
 -- Stealing worker
 
--- TODO: Implement stealing worker daemon. Design idea: a 'Chan ()'
--- that this daemon blockingly reads in a loop. When local workers are
--- starved for work and want to steal remotely, they put a '()' into
--- the 'Chan', making the daemon start looking for work.
-
 -- Questions: How long should it pester other nodes until giving up?
 --            Should it just randomly choose nodes to pester?  If
 --            local workers wind up back to work before successfully
@@ -624,6 +619,7 @@ stealWorker :: ProcessM ()
 stealWorker = do
   -- wait until a worker needs to steal
   liftIO $ do 
+    threadDelay 1000
 --    waitQSem remoteStealSem
     when dbg $ do 
       q <- readHotVar longQueue
