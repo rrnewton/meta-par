@@ -1,7 +1,10 @@
 
 
 import Control.Monad.Par.Scheds.Direct
-import Control.Monad.IO.Class
+import Control.Monad.Par.Unsafe (unsafePeek, unsafeTryPut)
+import Control.Monad.IO.Class (liftIO)
+
+import GHC.IO (unsafePerformIO)
 
 -- An example datatype.  Of course, a real strategy would work for
 -- *all* datatypes, but here we can sketch this out for a specific one.
@@ -13,15 +16,14 @@ data MyDat = A (IVar MyDat) (IVar MyDat)
 -- Here's an example value.  It's tedious to construct with all those IVars!
 e :: Par MyDat
 e = do [a1,a2,b1,b2] <- sequence $ replicate 4 new
-       c <- new
-       put_ c 38
+       c <- new -- Leave this empty.
        put_ b1 (C c)
        put_ b2 D
        put_ a1 (B b1)
        put_ a2 (B b2) 
        return (A a1 a2)
 
--- Print values.  This is very much scrap-your boilerplate stufF:
+-- Print values.  This is very much scrap-your boilerplate territory:
 prnt :: MyDat -> Par ()
 prnt x = 
   case x of 
@@ -40,10 +42,16 @@ prnt x =
 
 
 -- Simple example:
-t1 = runPar (e >>= prnt) -- ==  "A (B (C (38))) (B (D))"
+t1 = runPar $ do 
+     e'@(A biv _) <- e 
+     B civ   <- get biv
+     C numiv <- get civ
+     -- Fill in the hole:
+     put numiv 38
+     -- Print:
+     prnt e'
 
-
--- Here's a very simple path representation.  (n,m) selects the m-th
+-- Here's a very basic path representation.  (n,m) selects the m-th
 -- part of the product contained in the n-th variant of the sum.
 --
 -- Note this would have to get more sophisticated if there are tuples
@@ -57,10 +65,13 @@ path = [(0,0), -- Select first component of A
         (2,0)  -- Select first (only) component of C
         ]
 
--- Simple example:
+-- Simple example 2:  
+-- Use putPath to fill up a single point in a data structure:
 t2 = runPar$
      do e' <- e
-        putPath e' path 39
+        putPath e' path 39  -- Fill a single point.
+        prnt e'
+
 
 -- putPath populates a path from the root to a leaf in the tree structure.
 -- 
@@ -88,10 +99,10 @@ putPath x ((n,m):tl) val =
       case p of
         Just v  -> return v
         Nothing -> do nu <- makeNew n
-                      unsafeAtomicModify iv 
-                        (\x -> case x of 
-                                 Nothing -> nu
-                                 Just v  -> v)
+                      unsafePerformIO (putStrLn "Nothing in cell, making new...") `seq` return ()
+                      -- Attempt to do a put, if it fails because the IVar 
+		      -- is already filled, return the existing value.
+                      unsafeTryPut iv nu 
 
   makeNew 0 = do a1 <- new
                  a2 <- new
@@ -102,16 +113,3 @@ putPath x ((n,m):tl) val =
                  return (C c)
   makeNew 3 = return D
 
-
-putPath2 :: MyDat -> Path -> MyDat -> Par ()
-putPath2 = undefined                     
-
--- We don't have it now, but we could easily add unsafe operations:
-unsafePeek :: IVar a -> Par (Maybe a)
-unsafePeek = undefined
-
--- Likewise this could unsafely change the contents atomically.
--- This could be implemented with CAS or with locks.
--- (And there are many different ways to formulate this.)
-unsafeAtomicModify :: IVar a -> (Maybe a -> a) -> Par a
-unsafeAtomicModify = undefined
