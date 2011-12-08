@@ -1,7 +1,11 @@
 #!/bin/bash
 
 # Comment to disable debug mode:
-# OPTS="-DDEBUG"
+if [ "$DEBUG" != "" ]; then 
+  OPTS="-DDEBUG"
+else
+  OPTS=""
+fi
 
 ghc -i../.. --make parfib_dist.hs -O2 -threaded -rtsopts -fforce-recomp $OPTS $@
 cp parfib_dist worker/

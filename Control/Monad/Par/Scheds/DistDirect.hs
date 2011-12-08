@@ -395,7 +395,7 @@ get iv@(IVar v) = callCC $ \cont -> do
             when dbg $ do 
               (Sched { no }) <- liftIO mySched
               sn <- liftIO $ makeStableName iv
-              liftIO $ printf " [%d] Rescheduling on unavailable IVar %d\n"
+              liftIO $ printf " [%d] Unavailable IVar %d; back to the scheduler...\n"
                          no (hashStableName sn)
             reschedule
       r <- liftIO $ atomicModifyIORef v $ \contents ->
@@ -633,7 +633,12 @@ stealDaemon = do
 --    waitQSem remoteStealSem
     when dbg $ do 
       q <- readHotVar longQueue
+#if 0
+-- RRN: Temporarily disabling this chattiest bit:
       printf "Trying to steal long work\tlq:%s\n" (show $ dqlen q)
+#endif
+      return ()
+
   -- first, check local queue for work
   p <- liftIO $ modifyHotVar longQueue takefront
   case p of
