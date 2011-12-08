@@ -809,7 +809,7 @@ initParDist :: Par a -> MVar a -> String -> ProcessM ()
 
 initParDist userComp ans "MASTER" = do
   commonInit
-  myRcvPid   <- spawnLocal (setDaemonic >> receiveDaemon)
+  myRcvPid   <- Remote.spawnLocal (setDaemonic >> receiveDaemon)
   workerNids <- flip findPeerByRole "WORKER" <$> getPeers
   liftIO $ printf "Found %d peers\n" (length workerNids)
   let startfn nid = nameQueryOrStart nid "receiveDaemon" receiveDaemonInit__closure
@@ -829,10 +829,12 @@ initParDist _ _ "WORKER" = do
 initParDist _ _ _ = error "CloudHaskell Role must be MASTER or WORKER"
 
 commonInit = do
-  spawnLocal (setDaemonic >> finishedDaemon)
-  spawnLocal (setDaemonic >> stealDaemon)
   -- hack: start the global scheduler right away with trivial Par comp
   liftIO $ runParIO (return ())
+
+  Remote.spawnLocal (setDaemonic >> finishedDaemon)
+  Remote.spawnLocal (setDaemonic >> stealDaemon)
+
 
 
 #ifdef DEBUG
