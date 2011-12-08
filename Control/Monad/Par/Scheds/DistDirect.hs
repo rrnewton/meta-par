@@ -76,13 +76,16 @@ import qualified Remote.Process as P
 -- #define DEBUG
 dbg :: Bool
 #ifdef DEBUG
-dbg = True
-#else
 dbg = False
+-- Debug Remote-related only:
+dbgR = True
+#else
+dbg  = False
+dbgR = False
 #endif
 
 #define FORKPARENT
--- #define IDLEWORKERS
+-- define IDLEWORKERS
 
 --------------------------------------------------------------------------------
 -- Core type definitions
@@ -546,24 +549,26 @@ longSpawn clo@(Closure n pld) = do
                      $ P.makePayloadClosure clo
   iv <- new
   liftIO $ do 
+    -- Create a unique identifier for this IVar that is valid for the
+    -- rest of the current run:
     ivarid <- hashUnique <$> newUnique
     let pred (WorkFinished iid _)      = iid == ivarid
         -- the "continuation" to be invoked when receiving a
         -- 'WorkFinished' message for our 'IVarId'
         matchThis (WorkFinished _ pld) = liftIO $ do
           (cap, _) <- threadCapability =<< myThreadId
-          when dbg $ printf " [%d] Received answer from longSpawn\n" cap
+          when dbgR $ printf " [%d] Received answer from longSpawn\n" cap
           putResult pld
         putResult pld = do
           (cap, _) <- threadCapability =<< myThreadId
           dpld <- fromMaybe (error "failed to decode payload") 
                         <$> serialDecode pld
-          when dbg $ printf " [%d] Pushing put of remote work\n" cap
+          when dbgR $ printf " [%d] Pushing computation to put remote result into local IVar...\n" cap
           pushWork cap $ put_ iv dpld
           modifyHotVar_ matchIVars (IntMap.delete ivarid)
     modifyHotVar_ matchIVars (IntMap.insert ivarid 
                                             (matchIf pred matchThis, putResult))
-    when dbg $ do (no, _) <- threadCapability =<< myThreadId
+    when dbgR$ do (no, _) <- threadCapability =<< myThreadId
                   printf " [%d] Pushing work %s on longQueue\n" no n
     modifyHotVar_ longQueue (addback (ivarid, pclo))
 --    when dbg $ do q <- readHotVar longQueue
@@ -605,7 +610,7 @@ receiveDaemon = do
                    p <- liftIO $ modifyHotVar longQueue takefront
                    case p of
                      Just _ -> do
-                       when dbg $ liftIO $ printf " Sending stolen work\n" 
+                       when dbgR $ liftIO $ printf " Sending work to remote thief\n" 
                        return (StealResponse p, ())
                      Nothing -> return (StealResponse Nothing, ())
 
@@ -631,13 +636,13 @@ stealDaemon = do
   liftIO $ do 
     threadDelay 1000
 --    waitQSem remoteStealSem
-    when dbg $ do 
-      q <- readHotVar longQueue
 #if 0
 -- RRN: Temporarily disabling this chattiest bit:
+    when dbgR $ do 
+      q <- readHotVar longQueue
       printf "Trying to steal long work\tlq:%s\n" (show $ dqlen q)
-#endif
       return ()
+#endif
 
   -- first, check local queue for work
   p <- liftIO $ modifyHotVar longQueue takefront
@@ -652,7 +657,7 @@ stealDaemon = do
         (Just pw, Just iof) -> liftIO $ do
           let wrappedWork = liftIO (iof env >>= (snd pw))
           (cap, _) <- threadCapability =<< myThreadId
-          when dbg $ printf " [%d] pushing local longQueue work\n" cap
+          when dbgR $ printf " [%d] pushing local longQueue work\n" cap
           pushWork cap wrappedWork
         _ -> error "couldn't find closure for local steal"
     Nothing -> do
@@ -685,7 +690,7 @@ stealDaemon = do
                                liftIO $ writeChan finishedChan 
                                           (stealee, WorkFinished ivarid pld)
                       (cap, _) <- threadCapability =<< myThreadId
-                      when dbg $ printf " [%d] pushing stolen work\n" cap
+                      when dbgR $ printf " [%d] pushing stolen work\n" cap
                       pushWork cap wrappedWork
       loop numTries
   stealDaemon
@@ -817,17 +822,24 @@ initParDist :: Par a -> MVar a -> String -> ProcessM ()
 
 initParDist userComp ans "MASTER" = do
   commonInit
+  -- Start up the receive daemon both locally and on all remote hosts:
+  --------------------------------------------------------------------
   myRcvPid   <- Remote.spawnLocal (P.setDaemonic >> receiveDaemon)
   workerNids <- flip findPeerByRole "WORKER" <$> getPeers
-  liftIO $ printf "Found %d peers\n" (length workerNids)
+  liftIO $ printf "Found %d peers: %s\n" (length workerNids) (show workerNids)
+  -- Send a message to each slave telling it to start the receive daemon:
   let startfn nid = nameQueryOrStart nid "receiveDaemon" receiveDaemonInit__closure
   workerPids <- mapM startfn workerNids
+  liftIO $ printf "Initiated receive daemon on all peers.\n"
+  --------------------------------------------------------------------
+  -- Next, tell all the slave nodes about the peer list:
   let pids = myRcvPid:workerPids
   forM_ pids $ flip send (PeerList pids)
+  -- Finally, launch the computation locally:
   let wrappedComp = do res <- userComp
                        liftIO $ putMVar ans res
   liftIO $ runParIO wrappedComp
-  when dbg $ liftIO $ printf "Exiting initParDist\n"
+  when dbgR $ liftIO $ printf "Exiting initParDist\n"
 
 initParDist _ _ "WORKER" = do
   commonInit
@@ -839,7 +851,6 @@ initParDist _ _ _ = error "CloudHaskell Role must be MASTER or WORKER"
 commonInit = do
   -- hack: start the global scheduler right away with trivial Par comp
   liftIO $ runParIO (return ())
-
   Remote.spawnLocal (P.setDaemonic >> finishedDaemon)
   Remote.spawnLocal (P.setDaemonic >> stealDaemon)
 

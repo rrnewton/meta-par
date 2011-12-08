@@ -204,7 +204,6 @@ expandMode "Direct"   = [Direct]
 expandMode "ContFree" = [ContFree]
 expandMode "DistDirect" = [DistDirect]
 
--- Omitting Direct until its bugs are fixed:
 ivarScheds = [Trace, ContFree, Direct, DistDirect] 
 
 schedToModule s = 

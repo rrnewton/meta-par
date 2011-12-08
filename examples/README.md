@@ -17,7 +17,7 @@ installed by monad-par itself.
 
 Also, this directory provides benchmarking.  Ranging from the simple:
 
-    SHORTRUN=1 THREADS="1" ./benchmark.hs
+    SCHEDS=Trace SHORTRUN=1 THREADS="1" ./benchmark.hs
 
 To the involved:
 
