@@ -571,7 +571,7 @@ longSpawn clo@(Closure n pld) = do
 -- Message receive worker
 
 {-# NOINLINE matchIVars #-}
--- | An IntMap of 'MatchM' actions for the 'receiveWorker' thread to
+-- | An IntMap of 'MatchM' actions for the 'receiveDaemon' thread to
 -- try in order to handle 'WorkFinished' messages. Also contains the
 -- function to put completed work in the waiting IVar, in case we
 -- steal locally.
@@ -586,15 +586,15 @@ parWorkerPids = unsafePerformIO $ newHotVar V.empty
 -- Par computation and handles incoming 'WorkFinished' and 'PeerList'
 -- messages. It also /receives/ steal requests and /sends/ steal
 -- responses.
-receiveWorker :: ProcessM ()
-receiveWorker = do
+receiveDaemon :: ProcessM ()
+receiveDaemon = do
 --    when dbg $ liftIO $ do iids <- map fst <$> readHotVar matchIVars
 --                           printf "IVars %s\n" (show iids)
     matchIVars <- IntMap.foldr' ((:) . fst) 
                     [matchPeerList, matchUnknownThrow] -- fallthrough cases
                     <$> liftIO (readHotVar matchIVars)
     receiveTimeout 10000 $ (matchSteal:matchIVars)
-    receiveWorker
+    receiveDaemon
   where
     matchPeerList = match $ \(PeerList pids) -> liftIO $
                       modifyHotVar_ parWorkerPids (const $ V.fromList pids)
@@ -607,7 +607,7 @@ receiveWorker = do
                      Nothing -> return (StealResponse Nothing, ())
 
 --------------------------------------------------------------------------------
--- Stealing worker
+-- Remote Stealing Daemon
 
 -- Questions: How long should it pester other nodes until giving up?
 --            Should it just randomly choose nodes to pester?  If
@@ -615,13 +615,15 @@ receiveWorker = do
 --            stealing, should this detect and give up?
 
 -- | Semaphore that gets signalled when a local worker fails to find
--- local work. The stealWorker waits on this.
+--   local work. The stealDaemon waits on this.
 {-# NOINLINE remoteStealSem #-}
 remoteStealSem :: QSem
 remoteStealSem = unsafePerformIO $ newQSem 0
 
-stealWorker :: ProcessM ()
-stealWorker = do
+-- | Daemon that runs indefinitely and, when called upon, goes out in
+--   search of remote work.
+stealDaemon :: ProcessM ()
+stealDaemon = do
   -- wait until a worker needs to steal
   liftIO $ do 
     threadDelay 1000
@@ -634,7 +636,7 @@ stealWorker = do
   case p of
     Just (ivarid, pclo@(Closure _ env)) -> do
       -- if we have local work to do, just go ahead and do it, and
-      -- make sure the receiveWorker stops listening for an answer
+      -- make sure the receiveDaemon stops listening for an answer
       -- for that work
       mpw <- liftIO $ IntMap.lookup ivarid <$> readHotVar matchIVars
       pclo' <- evaluateClosure pclo
@@ -678,7 +680,7 @@ stealWorker = do
                       when dbg $ printf " [%d] pushing stolen work\n" cap
                       pushWork cap wrappedWork
       loop numTries
-  stealWorker
+  stealDaemon
   
 
 -- | When local workers finish remotely-stolen work, they put in this
@@ -687,11 +689,15 @@ stealWorker = do
 finishedChan :: Chan (ProcessId, WorkFinished)
 finishedChan = unsafePerformIO newChan
 
-finishedWorker :: ProcessM ()
-finishedWorker = do
+-- | This is a daemon that routes work-finished messages over the
+--   network.  Essentially this is here to mediate between IO
+--   computations and ProcessM computations.  (IO cannot call 'send'.)
+finishedDaemon :: ProcessM ()
+finishedDaemon = do
   (pid, wfm) <- liftIO $ readChan finishedChan
   send pid wfm
-  finishedWorker
+  finishedDaemon
+
 
 --------------------------------------------------------------------------------
 -- <boilerplate>
@@ -787,9 +793,9 @@ instance B.Binary Fingerprint where
 --------------------------------------------------------------------------------
 
 
-receiveWorkerInit = setDaemonic >> receiveWorker
+receiveDaemonInit = setDaemonic >> receiveDaemon
 
-remotable ['receiveWorkerInit]
+remotable ['receiveDaemonInit]
 
 
 --------------------------------------------------------------------------------
@@ -803,10 +809,10 @@ initParDist :: Par a -> MVar a -> String -> ProcessM ()
 
 initParDist userComp ans "MASTER" = do
   commonInit
-  myRcvPid   <- spawnLocal (setDaemonic >> receiveWorker)
+  myRcvPid   <- spawnLocal (setDaemonic >> receiveDaemon)
   workerNids <- flip findPeerByRole "WORKER" <$> getPeers
   liftIO $ printf "Found %d peers\n" (length workerNids)
-  let startfn nid = nameQueryOrStart nid "receiveWorker" receiveWorkerInit__closure
+  let startfn nid = nameQueryOrStart nid "receiveDaemon" receiveDaemonInit__closure
   workerPids <- mapM startfn workerNids
   let pids = myRcvPid:workerPids
   forM_ pids $ flip send (PeerList pids)
@@ -817,14 +823,14 @@ initParDist userComp ans "MASTER" = do
 
 initParDist _ _ "WORKER" = do
   commonInit
-  -- wait for the master node to spawn the receiveWorker
+  -- wait for the master node to spawn the receiveDaemon
   receiveWait []
 
 initParDist _ _ _ = error "CloudHaskell Role must be MASTER or WORKER"
 
 commonInit = do
-  spawnLocal (setDaemonic >> finishedWorker)
-  spawnLocal (setDaemonic >> stealWorker)
+  spawnLocal (setDaemonic >> finishedDaemon)
+  spawnLocal (setDaemonic >> stealDaemon)
   -- hack: start the global scheduler right away with trivial Par comp
   liftIO $ runParIO (return ())
 
