@@ -6,8 +6,8 @@ shift
 # Error if any command fails:
 set -e 
 
-ghc -i../.. --make parfib_dist.hs -O2 -threaded -rtsopts -fforce-recomp $@
-cp parfib_dist worker/
+./builddist.sh
+
 pushd worker
 ./parfib_dist monad $N +RTS -N2 -RTS & 
 popd

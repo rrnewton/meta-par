@@ -151,10 +151,10 @@ takeback  (DQ ls)     = (DQ rest, Just final)
  
 dqlen (DQ l) = length l
 
-dqDeleteBy :: (a -> a -> Bool) -> a -> Deque a -> Deque a
-dqDeleteBy = undefined
+-- dqDeleteBy :: (a -> a -> Bool) -> a -> Deque a -> Deque a
+-- dqDeleteBy = undefined
 
-dqToList (DQ xs) = xs
+-- dqToList (DQ xs) = xs
 
 --------------------------------------------------------------------------------
 -- Helpers #2:  Atomic Variables
@@ -265,6 +265,8 @@ isSchedThread = do
 
 {-# INLINE popWork #-}
 -- | Attempt to take work off the current thread's queue.
+-- 
+-- This function is on the fast path -- executing work locally.
 popWork :: IO (Maybe (Par ()))
 popWork = do
   (Sched { workpool, no }) <- mySched
@@ -281,6 +283,8 @@ popWork = do
 {-# INLINE pushWork #-}
 -- | Push work onto the queue of the specified thread. /Note:/ this is
 -- the /only/ place where the 'idleSem' is signalled.
+--
+-- This function is on the fast path -- executing work locally.
 pushWork :: Int -> Par () -> IO ()
 pushWork i task = do
   v <- allScheds
@@ -290,7 +294,7 @@ pushWork i task = do
                     printf " [%d] PUSH work unit %d\n" i (hashStableName sn)
       modifyHotVar_ workpool (addfront task)
 #ifdef IDLEWORKERS
-      signalQSem =<< idleSem
+      signalQSem =<< idleSem -- Note, this *should* be a scaling bottleneck.
 #endif
     _ -> do (me, _) <- threadCapability =<< myThreadId
             error $ printf " [%d] Tried to push onto nonexistend thread %d\n" me i
@@ -353,9 +357,10 @@ steal = do
       loop 0 _ = {-signalQSem remoteStealSem >>-} return ()
       loop n i | i == me   = loop (n-1) =<< getNext
                | otherwise = do
+        -- Peek at the other worker's local Sched structure:
         (Sched { workpool, no=target }) <- getSched i
 --        when dbg $ printf " [%d] trying steal from %d\n" me target
-        -- try and take off the end of the target's workpool
+        -- Try and take the oldest work from the target's workpool:
         mtask <- modifyHotVar workpool takeback
         case mtask of
           -- no work found; try another random
@@ -798,7 +803,7 @@ initParDist :: Par a -> MVar a -> String -> ProcessM ()
 
 initParDist userComp ans "MASTER" = do
   commonInit
-  myRcvPid <- spawnLocal (setDaemonic >> receiveWorker)
+  myRcvPid   <- spawnLocal (setDaemonic >> receiveWorker)
   workerNids <- flip findPeerByRole "WORKER" <$> getPeers
   liftIO $ printf "Found %d peers\n" (length workerNids)
   let startfn nid = nameQueryOrStart nid "receiveWorker" receiveWorkerInit__closure
