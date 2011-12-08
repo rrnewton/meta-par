@@ -61,10 +61,12 @@ import System.Mem.StableName
 import qualified Control.Monad.Par.Class as PC
 import Control.DeepSeq
 
-import Remote hiding (spawn)
+import Remote (ProcessM, Payload, MatchM, ProcessId, Serializable, RemoteCallMetaData,
+	       matchIf, send, match, receiveTimeout, receiveWait, matchUnknownThrow, 
+	       findPeerByRole, getPeers, spawnLocal, nameQueryOrStart, remoteInit)
 import Remote.Call
 import Remote.Closure
-import Remote.Encoding
+import Remote.Encoding (serialDecode)
 import qualified Remote.Process as P 
 
 --------------------------------------------------------------------------------
@@ -515,6 +517,8 @@ instance B.Binary WorkFinished where
   get = WorkFinished <$> B.get <*> B.get
   put (WorkFinished iid a) = B.put iid >> B.put a
 
+-- | Retrieve a list of Peer process IDs -- other nodes in the
+--   CloudHaskell/Remote computation.
 data PeerList = PeerList [ProcessId]
                 deriving (Typeable)
 
