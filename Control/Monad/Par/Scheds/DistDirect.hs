@@ -65,8 +65,7 @@ import Remote hiding (spawn)
 import Remote.Call
 import Remote.Closure
 import Remote.Encoding
-import qualified Remote.Process as P (spawn)
-import Remote.Process hiding (spawn)
+import qualified Remote.Process as P 
 
 --------------------------------------------------------------------------------
 -- Configuration Toggles 
@@ -540,7 +539,7 @@ longQueue = unsafePerformIO $ newHotVar emptydeque
 {-# INLINE longSpawn #-}
 longSpawn clo@(Closure n pld) = do
   let pclo = fromMaybe (error "Could not find Payload closure")
-                     $ makePayloadClosure clo
+                     $ P.makePayloadClosure clo
   iv <- new
   liftIO $ do 
     ivarid <- hashUnique <$> newUnique
@@ -598,7 +597,7 @@ receiveDaemon = do
   where
     matchPeerList = match $ \(PeerList pids) -> liftIO $
                       modifyHotVar_ parWorkerPids (const $ V.fromList pids)
-    matchSteal = roundtripResponse $ \StealRequest -> do
+    matchSteal = P.roundtripResponse $ \StealRequest -> do
                    p <- liftIO $ modifyHotVar longQueue takefront
                    case p of
                      Just _ -> do
@@ -639,7 +638,7 @@ stealDaemon = do
       -- make sure the receiveDaemon stops listening for an answer
       -- for that work
       mpw <- liftIO $ IntMap.lookup ivarid <$> readHotVar matchIVars
-      pclo' <- evaluateClosure pclo
+      pclo' <- P.evaluateClosure pclo
       case (mpw, pclo') of
         (Just pw, Just iof) -> liftIO $ do
           let wrappedWork = liftIO (iof env >>= (snd pw))
@@ -659,16 +658,16 @@ stealDaemon = do
           -- while we have tries, choose a random peer and try to steal
           loop n = do
             stealee <- (V.!) stealees <$> rand
-            isMe <- isPidLocal stealee
+            isMe <- P.isPidLocal stealee
             unless isMe $ do
-              response <- roundtripQuery PldUser stealee StealRequest
+              response <- P.roundtripQuery P.PldUser stealee StealRequest
               case response of
                 Left err -> error (show err)
                 -- message success, but nothing to steal from this peer
                 Right (StealResponse Nothing) -> loop (n-1)
                 Right (StealResponse (Just (ivarid, pclo@(Closure _ env)))) -> do
                   -- successful steal; wrap up the work and push on a queue
-                  pclo' <- evaluateClosure pclo
+                  pclo' <- P.evaluateClosure pclo
                   case pclo' of
                     Just iof -> liftIO $ do
                       let wrappedWork = 
@@ -793,7 +792,7 @@ instance B.Binary Fingerprint where
 --------------------------------------------------------------------------------
 
 
-receiveDaemonInit = setDaemonic >> receiveDaemon
+receiveDaemonInit = P.setDaemonic >> receiveDaemon
 
 remotable ['receiveDaemonInit]
 
@@ -809,7 +808,7 @@ initParDist :: Par a -> MVar a -> String -> ProcessM ()
 
 initParDist userComp ans "MASTER" = do
   commonInit
-  myRcvPid   <- Remote.spawnLocal (setDaemonic >> receiveDaemon)
+  myRcvPid   <- Remote.spawnLocal (P.setDaemonic >> receiveDaemon)
   workerNids <- flip findPeerByRole "WORKER" <$> getPeers
   liftIO $ printf "Found %d peers\n" (length workerNids)
   let startfn nid = nameQueryOrStart nid "receiveDaemon" receiveDaemonInit__closure
@@ -832,8 +831,8 @@ commonInit = do
   -- hack: start the global scheduler right away with trivial Par comp
   liftIO $ runParIO (return ())
 
-  Remote.spawnLocal (setDaemonic >> finishedDaemon)
-  Remote.spawnLocal (setDaemonic >> stealDaemon)
+  Remote.spawnLocal (P.setDaemonic >> finishedDaemon)
+  Remote.spawnLocal (P.setDaemonic >> stealDaemon)
 
 
 
