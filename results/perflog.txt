@@ -41,3 +41,13 @@ What about mandel?
   It's getting <2X speedup for me on four threads on this machine atm.
   It's about the same with the factored AList/parBuild as opposed to
   the original.
+
+
+[2011.12.09] {Memory usage of dist-direct}
+
+I'm watching a run of benchmark.hs on basalt.cs.indiana.edu right now
+and parfib_monad is taking 50% memory (2GB).  Seems excessive!
+
+
+
+

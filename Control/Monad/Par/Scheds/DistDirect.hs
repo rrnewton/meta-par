@@ -58,6 +58,7 @@ import "mtl" Control.Monad.Cont as C
 import System.Random as Random
 import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.StableName
+import System.Posix.Process (getProcessID)
 import qualified Control.Monad.Par.Class as PC
 import Control.DeepSeq
 
@@ -590,6 +591,10 @@ matchIVars = unsafePerformIO $ newHotVar IntMap.empty
 parWorkerPids :: HotVar (Vector ProcessId)
 parWorkerPids = unsafePerformIO $ newHotVar V.empty
 
+-- TEMP: For debugging:
+ospid :: String
+ospid = show $ unsafePerformIO getProcessID
+
 -- | This closure is spawned once per machine running a distributed
 -- Par computation and handles incoming 'WorkFinished' and 'PeerList'
 -- messages. It also /receives/ steal requests and /sends/ steal
@@ -601,16 +606,19 @@ receiveDaemon = do
     matchIVars <- IntMap.foldr' ((:) . fst) 
                     [matchPeerList, matchUnknownThrow] -- fallthrough cases
                     <$> liftIO (readHotVar matchIVars)
+    liftIO$ printf "[PID %s] receiveDaemon: Starting receiveTimeout\n" ospid
     receiveTimeout 10000 $ (matchSteal:matchIVars)
+    liftIO$ printf "[PID %s] receiveDaemon: receive timed out, looping..\n" ospid
     receiveDaemon
   where
     matchPeerList = match $ \(PeerList pids) -> liftIO $
                       modifyHotVar_ parWorkerPids (const $ V.fromList pids)
     matchSteal = P.roundtripResponse $ \StealRequest -> do
+                   when dbgR $ liftIO $ printf "[PID %s] Got StealRequest message!! \n" ospid
                    p <- liftIO $ modifyHotVar longQueue takefront
                    case p of
                      Just _ -> do
-                       when dbgR $ liftIO $ printf " Sending work to remote thief\n" 
+                       when dbgR $ liftIO $ printf "[PID %s] Sending work to remote thief\n" ospid
                        return (StealResponse p, ())
                      Nothing -> return (StealResponse Nothing, ())
 
@@ -635,6 +643,7 @@ stealDaemon = do
   -- wait until a worker needs to steal
   liftIO $ do 
     threadDelay 1000
+
 --    waitQSem remoteStealSem
 #if 0
 -- RRN: Temporarily disabling this chattiest bit:
@@ -674,7 +683,9 @@ stealDaemon = do
             stealee <- (V.!) stealees <$> rand
             isMe <- P.isPidLocal stealee
             unless isMe $ do
+              liftIO$ printf "[PID %s] stealDaemon: Waiting for response... \n" ospid
               response <- P.roundtripQuery P.PldUser stealee StealRequest
+              liftIO$ printf "[PID %s] stealDaemon: Got the response...\n" ospid
               case response of
                 Left err -> error (show err)
                 -- message success, but nothing to steal from this peer
