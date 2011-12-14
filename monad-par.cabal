@@ -42,13 +42,21 @@ Cabal-version:       >=1.2
 
 extra-source-files:
      examples/benchlist.txt
-     examples/benchmark.sh
+     examples/benchmark.hs
      examples/blackscholes_data.hs
      examples/blackscholes.hs
      examples/cholesky.hs
      examples/cholesky_matrix6.dat
      examples/coins.hs
      examples/common.mk
+     examples/distributed/builddist.sh
+     examples/distributed/config
+     examples/distributed/parfib_dist.hs
+     examples/distributed/rundist.sh
+     examples/distributed/rundist_logged.sh
+     examples/distributed/test.sh
+     examples/distributed/testdist.sh
+     examples/distributed/worker/config
      examples/get_cholesky_data.sh
      examples/Makefile
      examples/mandel.hs
@@ -56,6 +64,9 @@ extra-source-files:
      examples/matmult/Makefile
      examples/matmult/MatMult.hs
      examples/matmult/matmult.stdout
+     examples/Microbench/README.md
+     examples/Microbench/embarrassingly_par.hs
+     examples/Microbench/parMapReduceRange.hs
      examples/minimax/Board.hs
      examples/minimax/Game.hs
      examples/minimax/Main.hs
@@ -67,15 +78,18 @@ extra-source-files:
      examples/nbody.hs
      examples/ntimes
      examples/ntimes_minmedmax
-     examples/parfib.hs
+     examples/parfib_monad.hs
+     examples/parfib_pseq.hs
      examples/partree/Makefile
      examples/partree/partree.hs
      examples/partree/Tree.hs
-     examples/plot_scaling.hs
+     results/plot_scaling.hs
      examples/PortablePixmap.lhs
      examples/primes.hs
      examples/queens.hs
-     examples/run_tests.sh
+     examples/quicksort/parquicksort_monad.hs
+     examples/quicksort/parquicksort_pseq.hs
+--     examples/run_tests.sh
      examples/stream/DEVLOG.txt
      examples/stream/disjoint_working_sets_pipeline.hs
      examples/stream/fft_pipeline.hs
@@ -86,9 +100,21 @@ extra-source-files:
      examples/sumeuler/SumEuler.hs
      examples/sumeuler/SumEulerPrimes.hs
      examples/timeout.sh
+     tests/AllTests.hs
+     tests/ParTests.hs
      tests/AListTest.hs
-     tests/Test.hs
+     tests/Makefile			
+     tests/Test_ContReaderT.hs
+     tests/Test_ReaderContT.hs
      Control/Monad/Par/Stream.hs
+     results/Makefile
+     results/README.md
+     results/ScriptHelpers.hs
+     results/characterize_machine.sh
+     results/meta_summary.hs
+     results/perflog.txt
+     results/plot_ALL.hs
+     results/plot_scaling.hs
 
 Library
   Exposed-modules: Control.Monad.Par
@@ -122,6 +148,7 @@ Library
                , mtl >= 2.0.1.0
                , parallel >= 3.1
                , binary >= 0.5
+               , unix >= 2.5
                , remote
   -- NOTE!  These dependencies DO NOT include all dependencies required
   -- by the examples/benchmarks.  Run "make deps" in the examples
