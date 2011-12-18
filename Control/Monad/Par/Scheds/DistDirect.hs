@@ -684,13 +684,19 @@ stealDaemon = do
             isMe <- P.isPidLocal stealee
             unless isMe $ do
               liftIO$ printf "[PID %s] stealDaemon: Waiting for response... \n" ospid
+              -- TODO: perhaps use a timeout here?
               response <- P.roundtripQuery P.PldUser stealee StealRequest
               liftIO$ printf "[PID %s] stealDaemon: Got the response...\n" ospid
               case response of
-                Left err -> error (show err)
+                Left err -> do 
+                  liftIO$ printf "[PID %s] StealResponse: ERROR\n" ospid
+		  error (show err)
                 -- message success, but nothing to steal from this peer
-                Right (StealResponse Nothing) -> loop (n-1)
+                Right (StealResponse Nothing) -> do 
+                  liftIO$ printf "[PID %s] StealResponse: Nothing\n" ospid
+                  loop (n-1)
                 Right (StealResponse (Just (ivarid, pclo@(Closure _ env)))) -> do
+                  liftIO$ printf "[PID %s] StealResponse: Something\n" ospid
                   -- successful steal; wrap up the work and push on a queue
                   pclo' <- P.evaluateClosure pclo
                   case pclo' of
