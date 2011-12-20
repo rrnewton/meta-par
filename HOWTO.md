@@ -18,26 +18,26 @@ function.
 
 In the `examples/distributed/` directory, there are several relevant files:
 
-  * `parfib_dist.hs`, an implementation of the exponential fibonacci
-    algorithm that uses `longSpawn` for half of its recursive calls
-  * `builddist.sh`, a shell script that builds the `parfib_dist`
-    executable, and then copies a version to the `worker/`
-    subdirectory
-  * `rundist.sh`, a shell script that first launches the worker
-    executable, and then launches the master, at which point the
-    computation begins
-  * `config` and `worker/config`, CloudHaskell configuration files
-    that establish MASTER and WORKER node roles for the two copies of
-    the executable respectively. See the
-    [CloudHaskell example config](https://github.com/jepst/CloudHaskell/blob/master/examples/tests/config)
-    for details of what can be specified here.
+ * `parfib_dist.hs`, an implementation of the exponential fibonacci
+   algorithm that uses `longSpawn` for half of its recursive calls
+ * `builddist.sh`, a shell script that builds the `parfib_dist`
+   executable, and then copies a version to the `worker/`
+   subdirectory
+ * `rundist.sh`, a shell script that first launches the worker
+   executable, and then launches the master, at which point the
+   computation begins
+ * `config` and `worker/config`, CloudHaskell configuration files
+   that establish MASTER and WORKER node roles for the two copies of
+   the executable respectively. See the
+   [CloudHaskell example config](https://github.com/jepst/CloudHaskell/blob/master/examples/tests/config)
+   for details of what can be specified here.
     
 To run the example:
 
-  1. In the root directory of the `monad-par` source tree, run `cabal install`.
-  2. Run `cd examples/distributed`.
-  3. Run `./builddist.sh`.
-  4. Run `./rundist.sh`.
+ 1. In the root directory of the `monad-par` source tree, run `cabal install`.
+ 2. Run `cd examples/distributed`.
+ 3. Run `./builddist.sh`.
+ 4. Run `./rundist.sh`.
   
 ### Creating a distributed monad-par program
 
