@@ -1,0 +1,96 @@
+# TestName Variant NumThreads   MinTime MedianTime MaxTime
+#    
+# Thu Dec  8 13:58:47 EST 2011
+# Linux basalt.soic.indiana.edu 2.6.32-131.17.1.el6.x86_64 #1 SMP Thu Sep 29 10:24:25 EDT 2011 x86_64 x86_64 x86_64 GNU/Linux
+# Determined machine to have 4 hardware threads.
+# The Glorious Glasgow Haskell Compilation System, version 7.2.1
+# 
+# Running each test for 3 trial(s).
+#  ... with compiler options: -O2 -rtsopts
+#  ... with runtime options: -qa -s
+# Benchmarks_File: benchlist.txt
+# Benchmarks_Variant: desktop
+# Benchmarks_Version: 1.1
+# Git_Branch: dist-direct
+# Git_Hash: 8acc14f0bc17d2cd082e66802bf716a31c9325dc
+# Git_Depth: 218
+# Using the following settings from environment variables:
+#   BENCHLIST= THREADS=0 1 2 3 4  TRIALS=3  SHORTRUN= SCHEDS=DistDirect
+#   KEEPGOING=1  GHC=  GHC_FLAGS=  GHC_RTS=
+
+# *** Config [1..?], testing with ./parfib_monad.exe monad 38
+parfib_monad DistDirect 0 14.07 14.11 14.17
+parfib_monad DistDirect 1 16.81 16.82 16.83
+parfib_monad DistDirect 2 9.90 10.02 10.31
+parfib_monad DistDirect 3 6.54 6.54 6.55
+parfib_monad DistDirect 4 5.48 5.61 5.65
+
+# *** Config [6..?], testing with ./parfib_monad.exe nested 30
+parfib_monad DistDirect 0 ERR ERR ERR
+parfib_monad DistDirect 1 ERR ERR ERR
+parfib_monad DistDirect 2 ERR ERR ERR
+parfib_monad DistDirect 3 ERR ERR ERR
+parfib_monad DistDirect 4 ERR ERR ERR
+
+# *** Config [11..?], testing with ./blackscholes.exe 10000 15000000
+blackscholes DistDirect 0 11.57 11.62 11.62
+blackscholes DistDirect 1 11.43 11.44 11.45
+blackscholes DistDirect 2 5.92 5.92 5.93
+blackscholes DistDirect 3 3.97 3.97 3.98
+blackscholes DistDirect 4 3.11 3.11 3.13
+
+# *** Config [16..?], testing with ./nbody.exe 13000
+nbody DistDirect 0 3.62 3.62 3.66
+nbody DistDirect 1 3.55 3.56 3.56
+nbody DistDirect 2 1.90 1.91 1.93
+nbody DistDirect 3 1.24 1.24 1.28
+nbody DistDirect 4 0.98 1.01 1.04
+
+# *** Config [21..?], testing with ./mandel.exe 2000 2000 3000000
+mandel DistDirect 0 2.61 2.69 2.73
+mandel DistDirect 1 2.36 2.36 2.36
+mandel DistDirect 2 1.65 2.00 2.02
+mandel DistDirect 3 1.31 1.47 11.10
+mandel DistDirect 4 1.37 1.38 1.39
+
+# *** Config [26..?], testing with ./coins.exe 8 1250
+coins DistDirect 0 3.44 3.46 3.48
+coins DistDirect 1 3.71 3.71 3.72
+coins DistDirect 2 2.01 2.01 2.04
+coins DistDirect 3 1.39 1.42 1.46
+coins DistDirect 4 1.32 1.44 1.52
+
+# *** Config [31..?], testing with ./queens.exe 14
+queens DistDirect 0 ERR ERR ERR
+queens DistDirect 1 ERR ERR ERR
+queens DistDirect 2 ERR ERR ERR
+queens DistDirect 3 ERR ERR ERR
+queens DistDirect 4 ERR ERR ERR
+
+# *** Config [36..?], testing with ./quicksort/parquicksort_monad.exe 1500000
+quicksort/parquicksort_monad DistDirect 0 ERR ERR ERR
+quicksort/parquicksort_monad DistDirect 1 ERR ERR ERR
+quicksort/parquicksort_monad DistDirect 2 ERR ERR ERR
+quicksort/parquicksort_monad DistDirect 3 ERR ERR ERR
+quicksort/parquicksort_monad DistDirect 4 ERR ERR ERR
+
+# *** Config [41..?], testing with ./partree/partree.exe 600 20
+partree/partree DistDirect 0 6.14 6.22 6.22
+partree/partree DistDirect 1 13.79 13.80 13.87
+partree/partree DistDirect 2 6.25 6.32 6.43
+partree/partree DistDirect 3 44.92 56.07 75.42
+partree/partree DistDirect 4 ERR ERR ERR
+
+# *** Config [46..?], testing with ./matmult/matmult.exe 768 0 64
+matmult/matmult DistDirect 0 7.95 9.44 9.98
+matmult/matmult DistDirect 1 ERR ERR ERR
+matmult/matmult DistDirect 2 ERR ERR ERR
+matmult/matmult DistDirect 3 ERR ERR ERR
+matmult/matmult DistDirect 4 ERR ERR ERR
+
+# *** Config [51..?], testing with ./sumeuler/sumeuler.exe 38 8000 100
+sumeuler/sumeuler DistDirect 0 3.48 3.50 3.50
+sumeuler/sumeuler DistDirect 1 ERR ERR ERR
+sumeuler/sumeuler DistDirect 2 ERR ERR ERR
+sumeuler/sumeuler DistDirect 3 ERR ERR ERR
+sumeuler/sumeuler DistDirect 4 ERR ERR ERR
