@@ -1,5 +1,5 @@
 Name:                monad-par
-Version:             0.2.1
+Version:             0.1.9
 Synopsis:            A library for parallel programming based on a monad
 
 -- Version history:
@@ -8,8 +8,10 @@ Synopsis:            A library for parallel programming based on a monad
 --  0.1.0.2  : 
 --  0.1.1.0  : module reorganization, moving ParClass
 
+--  0.1.9    : release for NESTED functionality only, not the Class-based API
+
 --  0.2      : Bumped for new class-based API
---  0.2.1    : Bumped for change AList
+--  0.2.1    : Bumped for changed AList
 
 
 Description:         This library offers an alternative parallel programming
@@ -92,17 +94,13 @@ extra-source-files:
 
 Library
   Exposed-modules: Control.Monad.Par
-                 , Control.Monad.Par.Class
-                 , Control.Monad.Par.Unsafe
                  , Control.Monad.Par.Combinator
                  , Control.Monad.Par.RNG
                  , Control.Monad.Par.Scheds.Trace
                  , Control.Monad.Par.Scheds.TraceInternal
                  , Control.Monad.Par.Scheds.Sparks
-                 , Control.Monad.Par.Scheds.SerialElision
                  , Control.Monad.Par.AList 
                  -- AList should probably be internal.  Needs more testing and tuning:
-
 
 
   Build-depends: base >= 4 && < 5
@@ -130,8 +128,11 @@ Library
   ghc-options: -O2
   Other-modules:
                  Control.Monad.Par.Stream
+               , Control.Monad.Par.Class
+               , Control.Monad.Par.Unsafe
                , Control.Monad.Par.Scheds.Direct
                , Control.Monad.Par.Scheds.ContFree
+               , Control.Monad.Par.Scheds.SerialElision
                , Control.Monad.Par.Logging
                , Control.Monad.Par.IList
 -- RRN: Not exposing OpenList yet.  Need to improve performance.
