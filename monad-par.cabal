@@ -150,6 +150,9 @@ Library
                , binary >= 0.5
                , unix >= 2.5
                , remote
+               , bytestring >= 0
+               , hscassandra == 0.0.8
+               , MissingH >= 1.0.0
   -- NOTE!  These dependencies DO NOT include all dependencies required
   -- by the examples/benchmarks.  Run "make deps" in the examples
   -- directory.
