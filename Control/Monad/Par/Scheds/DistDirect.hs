@@ -67,8 +67,16 @@ import Remote (ProcessM, Payload, MatchM, ProcessId, Serializable, RemoteCallMet
 	       findPeerByRole, getPeers, spawnLocal, nameQueryOrStart, remoteInit)
 import Remote.Call
 import Remote.Closure
-import Remote.Encoding (serialDecode)
+import Remote.Encoding (serialDecode, getPayloadContent, getPayloadType, payloadLength, serialDecodePure)
 import qualified Remote.Process as P 
+
+-- cassandra access imports
+import qualified Database.Cassandra as NoSQL
+import Database.Cassandra.Types
+import qualified Data.ByteString.Lazy.Char8 as BS
+
+
+
 
 --------------------------------------------------------------------------------
 -- Configuration Toggles 
@@ -100,7 +108,7 @@ dbgR = False
 -- Note that the result type for continuations is unit.  Forked
 -- computations return nothing.
 --
-newtype Par a = Par { unPar :: C.ContT () IO a }
+newtype Par a = Par { unPar :: C.ContT () IO a }                      
     deriving (Monad, MonadIO, MonadCont, Typeable)
 
 data Sched = Sched 
@@ -544,6 +552,8 @@ type IVarId = Int
 longQueue :: HotVar (Deque (IVarId, Closure Payload))
 longQueue = unsafePerformIO $ newHotVar emptydeque
 
+-- modifying longSpawn to do a put through the cassandra daemon
+
 {-# INLINE longSpawn #-}
 longSpawn clo@(Closure n pld) = do
   let pclo = fromMaybe (error "Could not find Payload closure")
@@ -552,7 +562,7 @@ longSpawn clo@(Closure n pld) = do
   liftIO $ do 
     -- Create a unique identifier for this IVar that is valid for the
     -- rest of the current run:
-    ivarid <- hashUnique <$> newUnique
+    ivarid <- hashUnique <$> newUnique -- CHANGE TO PEDIGREE
     let pred (WorkFinished iid _)      = iid == ivarid
         -- the "continuation" to be invoked when receiving a
         -- 'WorkFinished' message for our 'IVarId'
@@ -565,6 +575,7 @@ longSpawn clo@(Closure n pld) = do
           dpld <- fromMaybe (error "failed to decode payload") 
                         <$> serialDecode pld
           when dbgR $ printf " [%d] Pushing computation to put remote result into local IVar...\n" cap
+          sendToCassandra ivarid pld -- send the IVarID and the Payload to the cassandra daemon
           pushWork cap $ put_ iv dpld
           modifyHotVar_ matchIVars (IntMap.delete ivarid)
     modifyHotVar_ matchIVars (IntMap.insert ivarid 
@@ -575,6 +586,87 @@ longSpawn clo@(Closure n pld) = do
 --    when dbg $ do q <- readHotVar longQueue
 --                  printf " lq: %s\n" (show (dqToList q))
   return iv
+
+-------------------------------------------------------------------------------
+-- Cassandra Access
+
+-- | Requirements:
+--    Cassandra server with keyspace distDirectPersist running on localhost port 9160
+--    Column family 120 inside keyspace
+
+-- helpers
+pack :: [Char] -> BS.ByteString
+pack string = BS.pack string
+
+deColumnValue :: NoSQL.Column -> BS.ByteString
+deColumnValue (NoSQL.Column _ value _) = value
+
+-- globals
+
+casConfig = NoSQL.CassandraConfig { NoSQL.cassandraKeyspace = "distDirectPersist"
+                         , NoSQL.cassandraConsistencyLevel = NoSQL.ONE
+                         , NoSQL.cassandraHostname = "127.0.0.1"  
+                         , NoSQL.cassandraPort = 9160                      
+                         , NoSQL.cassandraUsername = ""                  
+                         , NoSQL.cassandraPassword = ""                      
+                         }                      
+
+
+-- this run id should eventually change to be a command line argument
+-- each run will map to a column family
+runID :: Int
+runID = 120
+
+-- uses a chan to communicate with the cassandraDaemon, which sits inside
+-- runCassandraT and does the NoSQL writes
+
+sendToCassandra :: Int -> Payload -> IO ()
+sendToCassandra id value = writeChan casChan (id,value)
+
+casChan :: Chan (Int,Payload)
+casChan = unsafePerformIO $ newChan
+
+-- a channel to a "reader" to verify these puts, primarily for debugging
+verifyChan :: Chan (Int, Payload)
+verifyChan = unsafePerformIO $ newChan
+
+-- daemons
+
+cassandraDaemon :: IO (Either NoSQL.Failure ())
+cassandraDaemon =  NoSQL.runCassandraT casConfig $ do
+  
+  liftIO$ printf "cassandraDaemon has been started\n"
+  
+  outPairs <- liftIO$ getChanContents casChan
+
+  mapM_ (\tup -> do
+            liftIO$ putStrLn $ "ivar persisted, id: " ++ (show $ fst tup)
+            NoSQL.insert (show $ runID) (pack $ show $ fst tup) [ (pack "value") NoSQL.=: (B.encode $ snd tup) ]
+            liftIO$ writeChan verifyChan tup
+        ) outPairs
+
+-- handle possible Cassandra failures here
+eitherlessCassandraDaemon :: IO ()
+eitherlessCassandraDaemon = cassandraDaemon >>= (\x -> return (either (error "persistence failure") (\v -> v) x)) 
+-- verification daemon, reads original payloads and compares them to decoded payloads from Cassandra
+verifyDaemon :: IO (Either NoSQL.Failure ())
+verifyDaemon = NoSQL.runCassandraT casConfig $ do
+  
+  liftIO$ printf "verifyDaemon has been started\n"
+  
+  pairs <- liftIO$ getChanContents verifyChan
+  
+  mapM_ (\tup -> do
+            res <- NoSQL.get (show $ runID) (pack $ show $ fst tup) NoSQL.AllColumns
+            let decRes = B.decode $ deColumnValue $ head res
+                check :: Payload -> Payload -> Bool
+                check cas pld = (B.encode cas) == (B.encode pld)
+            liftIO$ putStrLn $ "ivar verification: " ++ (show $ check decRes (snd tup)) ++ " for id: " ++ (show $ fst tup)
+        ) pairs
+
+-- handle possible Cassandra failures here
+eitherlessVerifyDaemon :: IO ()
+eitherlessVerifyDaemon = verifyDaemon >>= (\x -> return (either (error "verify failure") (\v -> v) x))
 
 --------------------------------------------------------------------------------
 -- Message receive worker
@@ -870,6 +962,9 @@ commonInit = do
   liftIO $ runParIO (return ())
   Remote.spawnLocal (P.setDaemonic >> finishedDaemon)
   Remote.spawnLocal (P.setDaemonic >> stealDaemon)
+  -- possibly wrong place for this: start the cassandra and verification daemons
+  liftIO $ forkIO (eitherlessCassandraDaemon)
+  liftIO $ forkIO (eitherlessVerifyDaemon)
 
 
 
