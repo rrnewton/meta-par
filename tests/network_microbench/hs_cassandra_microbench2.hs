@@ -48,22 +48,17 @@ removeValue string = runCassandraT config $ do
 
 main = do
     
-    let words = map (\n -> (show n) ++ "Thequickbrownfoxjumpedoverthelazydog")  $ take 50000 [1..]
+    let words = map (\n -> (show n) ++ "Thequickbrownfoxjumpedoverthelazydog")  [1..50000]
         
     putStrLn "Benchmarking Cassandra binding."
-  
+
     putStrLn "About to start timing writes..."
-  
     writeStart <- getCurrentTime
-    
     runCassandraT config $ do
       mapM_ (\w -> insert "Users" (pack w) [(pack "name") =: (pack w) ]) words
-    
     writeStop <- getCurrentTime
   
-    let writeTime = diffUTCTime writeStop writeStart
-  
-    putStrLn ("Writes took " ++ (show $ writeTime))
+    putStrLn ("Writes took " ++ (show $ diffUTCTime writeStop writeStart))
   
     putStrLn "Starting reads..."
   
@@ -74,13 +69,8 @@ main = do
 
     readStop <- getCurrentTime
   
-    let readTime = diffUTCTime readStop readStart
-  
-    putStrLn ("Reads took " ++ (show $ readTime))
-  
-    let totalTime = diffUTCTime readStop writeStart
-  
-    putStrLn ("Total time: " ++ (show $ totalTime))
+    putStrLn ("Reads took " ++ (show $ diffUTCTime readStop readStart))
+    putStrLn ("Total time: " ++ (show $ diffUTCTime readStop writeStart))
   
     putStrLn "Removing keys..."
   
