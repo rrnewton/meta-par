@@ -1,0 +1,6 @@
+[submodule "HSBenchScaling"]
+	path = HSBenchScaling
+	url = https://github.com/rrnewton/HSBenchScaling.git
+[submodule "Deques"]
+	path = Deques
+	url = https://github.com/rrnewton/haskell-lockfree-queue.git
