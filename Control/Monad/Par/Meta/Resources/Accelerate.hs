@@ -34,7 +34,12 @@ import qualified Data.Array.IArray as IArray
 import qualified Data.Vector.Storable as Vector
 
 import Data.Concurrent.Deque.Class (ConcQueue, WSDeque)
+
+-- #ifdef DEQUEMOD
+-- import DEQUEMOD as R
+-- #else 
 import Data.Concurrent.Deque.Reference as R
+-- #endif
 
 import Foreign (Ptr, Storable)
 
@@ -60,6 +65,7 @@ dbg = False
 -- popped by the GPU daemon on the left. No backstealing is possible
 -- from this queue.
 gpuOnlyQueue :: WSDeque (IO ())
+-- gpuOnlyQueue :: ConcDeque (IO ()) -- RRN, if there are pushes from other threads this can't be a WSDeque.
 gpuOnlyQueue = unsafePerformIO R.newQ
 
 {-# NOINLINE gpuBackstealQueue #-}

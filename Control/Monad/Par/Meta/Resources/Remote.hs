@@ -40,7 +40,13 @@ import Data.Word              (Word8)
 import Data.Maybe             (fromMaybe)
 import Data.Char              (isSpace)
 import qualified Data.ByteString.Char8 as BS
+
+-- #ifdef DEQUEMOD
+-- import DEQUEMOD as R
+-- #else 
 import Data.Concurrent.Deque.Reference as R
+-- #endif
+
 import Data.Concurrent.Deque.Class     as DQ
 import Data.List as L
 import Data.List.Split    (splitOn)
@@ -176,7 +182,8 @@ data LongWork = LongWork {
   }
 
 {-# NOINLINE longQueue #-}
-longQueue :: DQ.Queue LongWork
+-- longQueue :: DQ.Queue LongWork
+longQueue :: DQ.WSDeque LongWork
 longQueue = unsafePerformIO $ R.newQ
 
 {-# NOINLINE peerTable #-}
@@ -780,7 +787,7 @@ defaultSteal = SA sa
     sa Sched{no} _ = do
       dbgDelay "stealAction"
       -- First try to pop local work:
-      x <- R.tryPopR longQueue
+      x <- R.tryPopL longQueue
       case x of 
         Just (LongWork{localver}) -> do
           dbgTaggedMsg 3$ "stealAction: worker number "+++sho no+++" found work in own queue."
@@ -840,7 +847,7 @@ longSpawn (local, clo@(Closure n pld)) = do
     -- Update the table with a Par computation that can write in the result.
     modifyHotVar_ remoteIvarTable (IntMap.insert ivarid ivarCont)
 
-    R.pushR longQueue 
+    R.pushL longQueue 
        (LongWork{ stealver= Just (ivarid,pclo),
 		  localver= do x <- local
                                liftIO$ do 
@@ -882,8 +889,11 @@ receiveDaemon targetEnd schedMap =
      StealRequest ndid -> do
        dbgCharMsg 3 "!" ("[rcvdmn] Received StealRequest from: "+++ showNodeID ndid)
 
-       -- There are no "peek" operations currently.  Instead assuming pushL:
-       p <- R.tryPopL longQueue
+       -- There are no "peek" operations currently.  Instead assuming pushR (remote push):
+       -- Actually, right now this is a GLOBAL longQueue -- still,
+       -- good to pop the oldest here, and the most recent for local
+       -- work:
+       p <- R.tryPopR longQueue
        case p of 
 	 Just (LongWork{stealver= Just stealme}) -> do 
 	   dbgTaggedMsg 2 "[rcvdmn]   StealRequest: longwork in stock, responding with StealResponse..."
@@ -892,7 +902,7 @@ receiveDaemon targetEnd schedMap =
           -- TODO: FIXME: Dig deeper into the queue to look for something stealable:
 	 Just x -> do 
 	    dbgTaggedMsg 2  "[rcvdmn]   StealRequest: Uh oh!  The bottom thing on the queue is not remote-executable.  Requeing it."
-            R.pushL longQueue x
+            R.pushR longQueue x
 	 Nothing -> do
 	    dbgTaggedMsg 4  "[rcvdmn]   StealRequest: No work to service request.  Not responding."
             return ()

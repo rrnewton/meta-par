@@ -37,8 +37,22 @@ import Control.Exception (catch, throwTo, SomeException)
 import GHC.Conc
 
 import Data.Concurrent.Deque.Class (WSDeque)
-import Data.Concurrent.Deque.Reference.DequeInstance
+
+
+-- import Data.Concurrent.Deque.Reference.DequeInstance
+
+#ifdef DEQUEMOD
+import DEQUEMOD as R
+import DEQUEMOD.DequeInstance
+#else 
 import Data.Concurrent.Deque.Reference as R
+import Data.Concurrent.Deque.Reference.DequeInstance
+#endif
+
+
+-- import Data.Concurrent.Deque.Reference.DequeInstance
+
+
 import Data.IntMap (IntMap)
 -- import Data.Word   (Word64)
 import qualified Data.IntMap as IntMap

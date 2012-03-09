@@ -21,7 +21,12 @@ import qualified Data.Vector.Storable as V
 import qualified Data.Vector.Storable.Mutable as M
 
 import Data.Concurrent.Deque.Class (ConcQueue, WSDeque)
+
+-- #ifdef DEQUEMOD
+-- import DEQUEMOD as R
+-- #else 
 import Data.Concurrent.Deque.Reference as R
+-- #endif
 
 import Data.Word (Word32)
 

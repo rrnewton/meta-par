@@ -15,7 +15,14 @@ module Control.Monad.Par.Meta.Resources.SharedMemory (
 import Control.Concurrent
 import Control.Monad
 
+-- [2012.03.08] Turning on the real thing:
+#ifdef DEQUEMOD
+import DEQUEMOD as R
+#else 
 import Data.Concurrent.Deque.Reference as R
+-- import Data.Concurrent.Deque.ChaseLev as R
+#endif
+
 import qualified Data.IntMap as IntMap
 import Data.List (nub)
 import qualified Data.Vector as Vector

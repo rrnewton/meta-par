@@ -158,10 +158,11 @@ Library
                , mtl >= 2.0.1.0
                , parallel >= 3.1
                , abstract-deque >= 0.1.4
+                -- AList now depends on binary/cereal:
                , binary
                , cereal >= 0.3
                , bytestring >= 0.9
-                -- AList now depends on binary/cereal.
+               , chaselev-deque
   if !flag(NoGPU) {
     Build-depends:
                  --  accelerate >= 0.9.0.1
@@ -183,7 +184,6 @@ Library
     Exposed-modules: Control.Monad.Par.Meta.Dist,
                      Control.Monad.Par.Meta.Resources.Remote
   }
---               , chaselev-deque
 --               , hashtables >= 1.0.0.0
   -- NOTE!  These dependencies DO NOT include all dependencies required
   -- by the examples/benchmarks.  Run "make deps" in the examples
@@ -263,6 +263,9 @@ Library
     include-dirs:    include
     includes:        pin.h
   }
+
+--  CPP-options: -DDEQUEMOD=Data.Concurrent.Deque.ChaseLev
+--  CPP-options: -DDEQUEMOD=Data.Concurrent.Deque.Reference
 
 Test-Suite test-monad-par
     type:       exitcode-stdio-1.0
