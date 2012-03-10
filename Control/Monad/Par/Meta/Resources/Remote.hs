@@ -177,16 +177,24 @@ eager_connections = False
 -- through the network.
 data LongWork = LongWork {
      localver  :: Par (),
-     stealver  :: Maybe (IVarId, Closure Payload)
+     stealver  :: (IVarId, Closure Payload)
   }
 
 {-# NOINLINE longQueue #-}
-#ifdef MSQUEUE
-longQueue :: R.LinkedQueue LongWork
-#else
+-- #ifdef MSQUEUE
+-- longQueue :: R.LinkedQueue LongWork
+-- #else
+-- longQueue :: DQ.ConcQueue LongWork
+-- #endif
+
 longQueue :: DQ.ConcQueue LongWork
-#endif
 longQueue = unsafePerformIO $ R.newQ
+
+-- | For things that are NOT remote stealable, namely, the callbacks
+-- that fill in IVars after receiving WorkFinished messages.
+localQueue :: DQ.ConcQueue (Par ())
+localQueue = unsafePerformIO $ R.newQ
+
 
 {-# NOINLINE peerTable #-}
 -- Each peer is either connected, or not connected yet.
@@ -788,13 +796,23 @@ defaultSteal = SA sa
   where 
     sa Sched{no} _ = do
       dbgDelay "stealAction"
-      -- First try to pop local work:
-      x <- R.tryPopR longQueue
+
+      -- First try to pop local-only work (we want to get those callbacks process promptly):
+      x <- R.tryPopR localQueue
+      -- It's unfortunate to have two places to check, but merging
+      -- them into one queue was causing a lot of awkwardness.
       case x of 
-        Just (LongWork{localver}) -> do
-          dbgTaggedMsg 3$ "stealAction: worker number "+++sho no+++" found work in own queue."
-          return (Just localver)
-        Nothing -> raidPeer
+       Just localWork -> do
+          dbgTaggedMsg 3$ "stealAction: worker number "+++sho no+++" found work in own LOCAL queue (callbacks)"
+          return (Just localWork)
+       Nothing -> do 
+
+	 x <- R.tryPopR longQueue
+	 case x of 
+	   Just (LongWork{localver}) -> do
+	     dbgTaggedMsg 3$ "stealAction: worker number "+++sho no+++" found work in own queue."
+	     return (Just localver)
+	   Nothing -> raidPeer
 
     pickVictim myid = do
       pt   <- readHotVar peerTable
@@ -850,13 +868,15 @@ longSpawn (local, clo@(Closure n pld)) = do
     modifyHotVar_ remoteIvarTable (IntMap.insert ivarid ivarCont)
 
     -- Pushing new spawned work should go on the right end of the queue:
-#ifdef MSQUEUE
-    -- For a basic queue it's only push left, pop right:
-    R.pushL longQueue 
-#else
+-- #ifdef MSQUEUE
+--     -- For a basic queue it's only push left, pop right:
+--     R.pushL longQueue 
+-- #else
+--     R.pushR longQueue 
+-- #endif
+
     R.pushR longQueue 
-#endif
-       (LongWork{ stealver= Just (ivarid,pclo),
+       (LongWork{ stealver= (ivarid,pclo),
 		  localver= do x <- local
                                liftIO$ do 
                                   dbgTaggedMsg 4 $ "Executed LOCAL version of longspawn.  "+++
@@ -898,22 +918,23 @@ receiveDaemon targetEnd schedMap =
        dbgCharMsg 3 "!" ("[rcvdmn] Received StealRequest from: "+++ showNodeID ndid)
 
        -- There are no "peek" operations currently.  Instead assuming pushL:
-#ifdef MSQUEUE
-       p <- R.tryPopR longQueue -- Queue's only popR
-#else
+-- #ifdef MSQUEUE
+--        p <- R.tryPopR longQueue -- Queue's only popR
+-- #else
+--        p <- R.tryPopL longQueue -- (WS)Deques popL
+-- #endif
        p <- R.tryPopL longQueue -- (WS)Deques popL
-#endif
        case p of 
-	 Just (LongWork{stealver= Just stealme}) -> do 
+	 Just (LongWork{stealver= stealme}) -> do 
 	   dbgTaggedMsg 2 "[rcvdmn]   StealRequest: longwork in stock, responding with StealResponse..."
 	   sendTo ndid (encode$ StealResponse myid stealme)
 
           -- TODO: FIXME: Dig deeper into the queue to look for something stealable:
-	 Just x -> do 
-	    dbgTaggedMsg 2  "[rcvdmn]   StealRequest: Uh oh!  The bottom thing on the queue is not remote-executable.  Requeing it."
---            R.pushL longQueue x
--- NEW_REQUE_STRATEGY: Get the thing on the left out of our way!  Move it to the other end.  Assumes FULL concurrent Deque:
-            R.pushR longQueue x
+-- 	 Just x -> do 
+-- 	    dbgTaggedMsg 2  "[rcvdmn]   StealRequest: Uh oh!  The bottom thing on the queue is not remote-executable.  Requeing it."
+-- --            R.pushL longQueue x
+-- -- NEW_REQUE_STRATEGY: Get the thing on the left out of our way!  Move it to the other end.  Assumes FULL concurrent Deque:
+--             R.pushR longQueue x
 	 Nothing -> do
 	    dbgTaggedMsg 4  "[rcvdmn]   StealRequest: No work to service request.  Not responding."
             return ()
@@ -926,18 +947,14 @@ receiveDaemon targetEnd schedMap =
        -- continuations) using the SAME work queue.  We thus have
        -- heterogeneous entries in that queue.
 
--- NEW_REQUE_STRATEGY: Push everything NONSTEALABLE on the right.  We
--- COULD make this stealable, but we worry about ping-poinging.
-       R.pushR longQueue 
---       R.pushL longQueue 
-	    (LongWork { stealver = Nothing,
-			localver = do 
-				     liftIO$ dbgTaggedMsg 1 $ "[rcvdmn] RUNNING STOLEN PAR WORK "
-				     payl <- loc
-				     liftIO$ dbgTaggedMsg 1 $ "[rcvdmn]   DONE running stolen par work."
-				     liftIO$ sendTo fromNd (encode$ WorkFinished myid ivarid payl)
-				     return ()
-		       })
+       R.pushR localQueue
+	    (do 
+	        liftIO$ dbgTaggedMsg 1 $ "[rcvdmn] RUNNING STOLEN PAR WORK "
+		payl <- loc
+		liftIO$ dbgTaggedMsg 1 $ "[rcvdmn]   DONE running stolen par work."
+		liftIO$ sendTo fromNd (encode$ WorkFinished myid ivarid payl)
+		return ()
+	    )
        rcvLoop myid
 
      WorkFinished fromNd ivarid payload -> do
@@ -950,11 +967,7 @@ receiveDaemon targetEnd schedMap =
        case IntMap.lookup ivarid table of 
 	 Nothing  -> errorExit$ "Processing WorkFinished message, failed to find ivarID in table: "++show ivarid
 	 Just parFn -> 
---	   R.pushL longQueue (LongWork { stealver = Nothing, 
--- NEW_REQUE_STRATEGY: Everything nonstealable goes on the right end:
-	   R.pushR longQueue (LongWork { stealver = Nothing, 
-					 localver = parFn payload
-				       })
+	   R.pushR localQueue (parFn payload)
        rcvLoop myid
 
      -- This case EXITS the receive loop peacefully:
