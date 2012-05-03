@@ -138,10 +138,10 @@ dbg = False
 -- 'runMetaPar'. This type should therefore be exposed to client code
 -- as a @newtype@ that omits the 'MonadIO' instance.
 newtype Par a = Par { unPar :: ContT () ROnly a }
-    deriving (Monad, MonadCont, MonadReader Sched, 
+    deriving (Monad, MonadCont, MonadReader (PrivateState, Sched), 
               MonadIO, Applicative, Functor, Typeable)
 
-type ROnly = ReaderT Sched IO
+type ROnly = ReaderT (PrivateState, Sched) IO
 
 -- | An 'IVar' is a /write-once/, /read-many/ structure for
 -- communication between 'Par' threads.
@@ -156,6 +156,10 @@ data IVarContents a = Full a | Empty | Blocked [a -> IO ()]
 -- workers in a program in a 'Data.Vector' indexed by capability
 -- number.
 type GlobalState = Vector (Maybe Sched)
+
+-- | Private state is particular to a `runPar` invocation.  It is NOT
+--   shared between separate or nested invocations.
+data PrivateState = PrivateState
 
 -- | The 'Startup' component of a 'Resource' is a callback that
 -- implements initialization behavior. For example, the SMP 'Startup'
@@ -427,7 +431,7 @@ spawnWorkerOnCPU ws cap =
     readMVar startBarrier
     when dbg$ dbgTaggedMsg 2 $ BS.pack $ 
       printf "[meta: cap %d] new working entering loop" cap
-    runReaderT (workerLoop 0 errK) sched
+    runReaderT (workerLoop 0 errK) (PrivateState, sched)
 
 errK :: a
 errK = error "this closure shouldn't be used"
@@ -437,7 +441,7 @@ reschedule = Par $ ContT (workerLoop 0)
 
 workerLoop :: Int -> ignoredCont -> ROnly ()
 workerLoop failCount _k = do
-  mysched@Sched{ no, mortals, schedWs=ws, consecutiveFailures } <- ask
+  (_,mysched@Sched{ no, mortals, schedWs=ws, consecutiveFailures }) <- ask
   mwork <- liftIO $ popWork mysched
   case mwork of
     Just work -> do
@@ -467,7 +471,7 @@ workerLoop failCount _k = do
 {-# INLINE fork #-}
 fork :: Par () -> Par ()
 fork child = do
-  sched <- ask
+  (_,sched) <- ask
   callCC $ \parent -> do
     let wrapped = parent ()
     liftIO $ pushWork sched wrapped
@@ -487,7 +491,7 @@ get (IVar hv) = callCC $ \cont -> do
   case contents of
     Full a -> return a
     _ -> do
-      sch <- ask
+      (_,sch) <- ask
       join . liftIO $ modifyHotVar hv $ \contents ->
         case contents of
           Empty      -> (Blocked [pushWork sch . cont]     , reschedule)

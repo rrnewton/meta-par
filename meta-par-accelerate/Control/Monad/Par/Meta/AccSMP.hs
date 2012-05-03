@@ -22,9 +22,7 @@ module Control.Monad.Par.Meta.AccSMP
     -- | Same as `runPar` but don't hide the IO.
     runParIO,
  
-    -- Reexport the ParAccelerate class:
---    AC.ParAccelerate(..),
-    --    module Control.Monad.Par.Accelerate,
+    -- Reexport the ParAccelerate, ParFuture, ParIVar classes:
     module AC, 
     module PC    
  ) where

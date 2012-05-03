@@ -87,7 +87,8 @@ jenkins-all-versions:
 # --------------------------------------------------------------------------------
 
 test:
-	$(MAKE) mega-install CABAL_ARGS='--enable-tests --disable-documentation'
+	$(MAKE) mega-install CABAL_ARGS='--enable-tests --disable-documentation --force-reinstalls'
+	(cd examples; $(MAKE) test)
 
 # Running a full test uses cabal-dev to sandbox the build.
 validate: 
